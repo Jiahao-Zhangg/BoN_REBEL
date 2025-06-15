@@ -13,11 +13,11 @@ torch.set_printoptions(threshold=10_000)
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="meta-llama/Meta-Llama-3-8B-Instruct")
+    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
     parser.add_argument("--input_repo", type=str, required=True, help="output repo from rank.py")
     parser.add_argument("--maxlen", type=int, default=2048)
     parser.add_argument("--maxlen_prompt", type=int, default=1024)
-    parser.add_argument("--pairs", type=int, default=5)
+    parser.add_argument("--pairs", type=int, default=105)
     return parser.parse_args()
 
 
@@ -89,11 +89,13 @@ def main():
 
     # select chosen and reject
     chosen, reject, llama_chosen, llama_reject, llama_chosen_tokens, llama_reject_tokens, chosen_reward, reject_reward = [], [], [], [], [], [], [], []
+    g_chosen_list, g_reject_list = [], []
     
-    for row in dataset:
+    for row in tqdm(dataset):
 
-        all_rewards = [row[f"response_{i}_reward"] for i in range(args.pairs)]
-        chosen_idx, reject_idx = np.argmax(all_rewards), np.argmin(all_rewards)
+        # 1. for the first 5 reponses, choose the one with highest reward as chosen repsonse, the one with lowest reward as reject response
+        all_rewards_5 = [row[f"response_{i}_reward"] for i in range(5)]
+        chosen_idx, reject_idx = np.argmax(all_rewards_5), np.argmin(all_rewards_5)
 
         chosen.append(row[f"response_{chosen_idx}"])
         reject.append(row[f"response_{reject_idx}"])
@@ -107,7 +109,8 @@ def main():
         )[5:]
         llama_chosen_tokens.append(llama_chosen_token)
         llama_chosen.append(tokenizer.decode(llama_chosen_token, skip_special_tokens=False))
-        chosen_reward.append(row[f"response_{chosen_idx}_reward"])
+        _chosen_reward = row[f"response_{chosen_idx}_reward"]
+        chosen_reward.append(_chosen_reward)
         assert len(llama_chosen_token) == args.maxlen
         assert llama_chosen_token[-1] == 128009 or llama_chosen_token[-1] == 128256
 
@@ -120,9 +123,22 @@ def main():
         )[5:]
         llama_reject_tokens.append(llama_reject_token)
         llama_reject.append(tokenizer.decode(llama_reject_token, skip_special_tokens=False))
-        reject_reward.append(row[f"response_{reject_idx}_reward"])
+        _reject_reward = row[f"response_{reject_idx}_reward"]
+        reject_reward.append(_reject_reward)
         assert len(llama_reject_token) == args.maxlen
         assert llama_reject_token[-1] == 128009 or llama_reject_token[-1] == 128256
+
+        # 2. for the rest 100 responses, compute the logsumexp in the figure
+        M = 100
+        n = 2
+        tau = 1e3
+        constant = n / (M * tau)
+        rest_rewards = [row[f"response_{i}_reward"] for i in range(5, 105)]
+        
+        g_chosen = constant * sum([np.log(_chosen_reward + r) for r in rest_rewards])
+        g_reject = constant * sum([np.log(_reject_reward + r) for r in rest_rewards])
+        g_chosen_list.append(g_chosen)
+        g_reject_list.append(g_reject)
 
     dataset = dataset.add_column("chosen", chosen)
     dataset = dataset.add_column("chosen_reward", chosen_reward)
@@ -132,6 +148,8 @@ def main():
     dataset = dataset.add_column("reject_reward", reject_reward)
     dataset = dataset.add_column("llama_reject", llama_reject)
     dataset = dataset.add_column("llama_reject_tokens", llama_reject_tokens)
+    dataset = dataset.add_column("g_chosen", g_chosen_list)
+    dataset = dataset.add_column("g_reject", g_reject_list)
 
     # filter prompts with exactly same responses
     dataset = dataset.filter(lambda row: filter_same_responses(row))

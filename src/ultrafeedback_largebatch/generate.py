@@ -19,13 +19,13 @@ def set_seed(seed=5775709):
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="meta-llama/Meta-Llama-3-8B-Instruct")
+    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
     parser.add_argument("--prompts", type=str, default="allenai/ultrafeedback_binarized_cleaned_train")
     parser.add_argument("--output_repo", type=str, required=True, help="output repo for the generated reponses")
     parser.add_argument("--maxlen", type=int, default=2048)
     parser.add_argument("--start_idx", type=int, default=0)
-    parser.add_argument("--end_idx", type=int, default=-1)
-    parser.add_argument("--pairs", type=int, default=5)
+    parser.add_argument("--end_idx", type=int, default=30000)
+    parser.add_argument("--pairs", type=int, default=105)
     parser.add_argument("--world_size", type=int, default=4)
     return parser.parse_args()
 

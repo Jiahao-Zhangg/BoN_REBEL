@@ -57,6 +57,8 @@ class REBELHParams:
     whiten_rewards: bool = False
     shift_mean: bool = False
     eta: float = 1.0
+    num_reward_samples: int = 10  # M in the algorithm
+    tau: float = 1.0  # temperature parameter for LSE
 
 
 @dataclass
@@ -405,6 +407,15 @@ def evaluate(args: Args, reward_model, policy, tokenizer, dataloader, generation
     return eval_storage, eval_df
 
 
+def compute_lse_reward(rewards, tau):
+    """
+    Compute Log-Sum-Exp reward aggregation
+    rewards: tensor of shape [batch_size, M, n] where M is number of samples
+    tau: temperature parameter
+    """
+    return (tau * torch.logsumexp(rewards/tau, dim=1)).mean(dim=1)
+
+
 if __name__ == "__main__":
 
     args = tyro.cli(Args)
@@ -641,101 +652,51 @@ if __name__ == "__main__":
             queries = data["query_token"].to(device)
             context_length = queries.shape[1]
 
-            query_responses = []
-            responses = []
-            postprocessed_responses = []
-            logprobs = []
-            ref_logprobs = []
-            scores = []
-            sequence_lengths = []
+            # Generate M sets of responses for each query
+            query_responses_list = []
+            responses_list = []
+            scores_list = []
+            for _ in range(args.rebel.num_reward_samples):
+                query_response = generate(
+                    accelerator.unwrap_model(policy),
+                    queries,
+                    tokenizer,
+                    generation_config,
+                )
+                response = query_response[:, context_length:]
+                
+                # Get reward for this response
+                postprocessed_response = truncate_response(args, tokenizer, response)
+                postprocessed_query_response = torch.cat((queries, postprocessed_response), 1)
+                _, score, _ = get_reward(reward_model, postprocessed_query_response, tokenizer, context_length)
+                
+                query_responses_list.append(query_response)
+                responses_list.append(response)
+                scores_list.append(score)
 
-            for i in range(0, queries.shape[0], args.local_rollout_forward_batch_size):
-                query = queries[i : i + args.local_rollout_forward_batch_size]
+            # Stack all samples
+            query_responses = torch.stack(query_responses_list, dim=1)  # [batch_size, M, seq_len]
+            responses = torch.stack(responses_list, dim=1)  # [batch_size, M, response_len]
+            scores = torch.stack(scores_list, dim=1)  # [batch_size, M]
 
-                batch_query_responses = []
-                batch_responses = []
-                batch_postprocessed_responses = []
-                batch_logprobs = []
-                batch_ref_logprobs = []
-                batch_scores = []
-                batch_sequence_lengths = []
-
-                for _ in range(2):
-                    query_response = generate(
-                        accelerator.unwrap_model(policy),
-                        query,
-                        tokenizer,
-                        generation_config,
-                    )
-                    response = query_response[:, context_length:]
-
-                    output = forward(accelerator.unwrap_model(policy), query_response, tokenizer)
-                    logits = output.logits[:, context_length - 1 : -1]
-                    logits /= args.task.temperature + 1e-7
-                    all_logprob = F.log_softmax(logits, dim=-1)
-                    logprob = torch.gather(all_logprob, 2, response.unsqueeze(-1)).squeeze(-1)
-                    del output, logits, all_logprob
-                    torch.cuda.empty_cache()
-
-                    ref_output = forward(accelerator.unwrap_model(policy), query_response, tokenizer, ref=True)
-                    ref_logits = ref_output.logits[:, context_length - 1 : -1]
-                    ref_logits /= args.task.temperature + 1e-7
-                    ref_all_logprob = F.log_softmax(ref_logits, dim=-1)
-                    ref_logprob = torch.gather(ref_all_logprob, 2, response.unsqueeze(-1)).squeeze(-1)
-                    del ref_output, ref_logits, ref_all_logprob
-                    torch.cuda.empty_cache()
-
-                    # Response Processing 1. truncate response after the first occurrence of `truncate_token_id`
-                    postprocessed_response = truncate_response(args, tokenizer, response)
-
-                    # Response Processing 2. run reward model on the truncated responses
-                    postprocessed_query_response = torch.cat((query, postprocessed_response), 1)
-                    sequence_length = first_true_indices(postprocessed_response == tokenizer.pad_token_id) - 1
-                    _, score, _ = get_reward(reward_model, postprocessed_query_response, tokenizer, context_length)
-
-                    batch_query_responses.append(query_response)
-                    batch_responses.append(response)
-                    batch_postprocessed_responses.append(postprocessed_response)
-                    batch_logprobs.append(logprob)
-                    batch_ref_logprobs.append(ref_logprob)
-                    batch_scores.append(score)
-                    batch_sequence_lengths.append(sequence_length)
-
-                query_responses.append(torch.stack(batch_query_responses, 1))
-                responses.append(torch.stack(batch_responses, 1))
-                postprocessed_responses.append(torch.stack(batch_postprocessed_responses, 1))
-                logprobs.append(torch.stack(batch_logprobs, 1))
-                ref_logprobs.append(torch.stack(batch_ref_logprobs, 1))
-                scores.append(torch.stack(batch_scores, 1))
-                sequence_lengths.append(torch.stack(batch_sequence_lengths, 1))
-
-            query_responses = torch.cat(query_responses, 0).flatten(end_dim=1)
-            responses = torch.cat(responses, 0).flatten(end_dim=1)
-            postprocessed_responses = torch.cat(postprocessed_responses, 0).flatten(end_dim=1)
-            logprobs = torch.cat(logprobs, 0).flatten(end_dim=1)
-            ref_logprobs = torch.cat(ref_logprobs, 0).flatten(end_dim=1)
-            scores = torch.cat(scores, 0).flatten(end_dim=1)
-            sequence_lengths = torch.cat(sequence_lengths, 0).flatten(end_dim=1)
-            del (logprob, ref_logprob, score, batch_query_responses, batch_responses, batch_postprocessed_responses, \
-                 batch_logprobs, batch_ref_logprobs, batch_scores, batch_sequence_lengths)
-            torch.cuda.empty_cache()
+            # Compute LSE aggregated reward
+            rewards = compute_lse_reward(scores, args.rebel.tau)
 
             # Response Processing 3. filter response. Ensure that the sample contains truncate_token_id
             # responses not passing that filter will receive a low (fixed) score
             # only query humans on responses that pass that filter
-            contain_pad_token = torch.any(postprocessed_responses == tokenizer.pad_token_id, dim=-1)
-            scores = torch.where(contain_pad_token, scores, torch.full_like(scores, args.task.penalty_reward_value))
-            accelerator.print(f"{scores=}, {(contain_pad_token.sum() / len(contain_pad_token))=}")
+            contain_pad_token = torch.any(responses == tokenizer.pad_token_id, dim=-1)
+            rewards = torch.where(contain_pad_token, rewards, torch.full_like(rewards, args.task.penalty_reward_value))
+            accelerator.print(f"{rewards=}, {(contain_pad_token.sum() / len(contain_pad_token))=}")
 
             # 4. cumulative logprob
             seq_mask = torch.arange(responses.size(1), device=policy.device).unsqueeze(0).expand_as(responses) <= sequence_lengths.unsqueeze(1)
             logprobs = (logprobs * seq_mask).sum(-1)
-            ref_logprobs = (ref_logprobs * seq_mask).sum(-1)
 
             # 5. kl reward and normalization
-            kl = logprobs - ref_logprobs
+            kl = logprobs - rewards
             non_score_reward = -kl_ctl.value * kl
-            rewards = non_score_reward + scores
+            rewards = non_score_reward
             if args.rebel.whiten_rewards:
                 rewards = whiten(rewards, args.rebel.shift_mean)
 
@@ -744,8 +705,6 @@ if __name__ == "__main__":
                 console.print(
                     f"mean_kl",
                     kl.mean().item(),
-                    "scores",
-                    scores.mean().item(),
                 )
             torch.cuda.empty_cache()
 
@@ -809,10 +768,10 @@ if __name__ == "__main__":
             writer.add_scalar("objective/kl", accelerator.gather(mean_kl).mean().item(), update)
             writer.add_scalar("objective/entropy", accelerator.gather(mean_entropy).mean().item(), update)
             writer.add_scalar("objective/non_score_reward", accelerator.gather(mean_non_score_reward).mean().item(), update)
-            writer.add_scalar("objective/score_total", accelerator.gather(mean_non_score_reward + scores.mean()).mean().item(), update)
-            writer.add_scalar("objective/scores", accelerator.gather(scores.mean()).mean().item(), update)
+            writer.add_scalar("objective/score_total", accelerator.gather(mean_non_score_reward + rewards.mean()).mean().item(), update)
+            writer.add_scalar("objective/scores", accelerator.gather(rewards.mean()).mean().item(), update)
             writer.add_scalar("objective/validation_score", accelerator.gather(validation_score.mean()).mean().item(), update)
-            writer.add_histogram("objective/scores_his", accelerator.gather(scores).cpu().float().numpy().flatten(), update, max_bins=64)
+            writer.add_histogram("objective/scores_his", accelerator.gather(rewards).cpu().float().numpy().flatten(), update, max_bins=64)
             writer.add_histogram("objective/validation_scores_his", accelerator.gather(validation_score).cpu().float().numpy().flatten(), update, max_bins=64)
             writer.add_scalar("rebel/loss/policy", accelerator.gather(loss).mean().item(), update)
             writer.add_scalar("rebel/policy/entropy", accelerator.gather(entropy.mean()).mean().item(), update)
@@ -835,7 +794,7 @@ if __name__ == "__main__":
             accelerator.print("npg/eps", eps, update)
             if args.reward.use_adaptive_kl:
                 kl_ctl.update(mean_kl.item(), args.batch_size)
-            del kl, mean_kl, mean_entropy, mean_non_score_reward, scores
+            del kl, mean_kl, mean_entropy, mean_non_score_reward, rewards
             torch.cuda.empty_cache()
 
     if args.run_eval:

@@ -13,7 +13,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--reward_model", type=str, default="RLHFlow/ArmoRM-Llama3-8B-v0.1")
     parser.add_argument("--input_repo", type=str, required=True, help="output repo from generate.py")
-    parser.add_argument("--pairs", type=int, default=5)
+    parser.add_argument("--pairs", type=int, default=105)
     return parser.parse_args()
 
 

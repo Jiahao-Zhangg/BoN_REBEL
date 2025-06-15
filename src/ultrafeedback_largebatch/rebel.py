@@ -74,7 +74,7 @@ class Args:
     """The micro batch size per GPU (HF's `per_device_train_batch_size`)"""
     per_device_eval_batch_size: int = 1
     """per rank eval batch size"""
-    total_episodes: int = 60000
+    total_episodes: int = 30000
     """The total number of episodes to train"""
 
     # optional args filled while running
@@ -86,7 +86,7 @@ class Args:
     """The batch size per GPU (HF's `per_device_train_batch_size` * `gradient_accumulation_steps`)"""
 
     # other args
-    base_model: str = "meta-llama/Meta-Llama-3-8B-Instruct"
+    base_model: str = "meta-llama/Llama-3.2-1B-Instruct"
     """the name of the pretrained model to use"""
     output_dir: str = None
     """Where to save the model"""
@@ -221,7 +221,7 @@ def evaluate(args, policy, tokenizer, dataloader):
             ratio_logprob = new_logprobs - logprobs
             ratio_logprob = ratio_logprob[:args.per_device_eval_batch_size] - ratio_logprob[args.per_device_eval_batch_size:]
 
-            reg_diff = ratio_logprob - args.rebel.eta * (data["chosen_reward"] - data["reject_reward"])
+            reg_diff = ratio_logprob - args.rebel.eta * (data["g_chosen"] - data["g_reject"])
             loss.append((reg_diff ** 2).mean().reshape(1))
 
             sign_align.append((ratio_logprob > 0).float().mean().reshape(1))
@@ -289,28 +289,26 @@ if __name__ == '__main__':
             )
     disable_dropout_in_model(policy)
 
+    base_columns = [
+        "llama_prompt_tokens", "llama_chosen_tokens", "chosen_reward",
+        "llama_reject_tokens", "reject_reward", "g_chosen", "g_reject"
+    ]
+    logprob_columns = base_columns + ["chosen_logprob", "reject_logprob"]
+
     # Prompt Collection Dataset
     compute_log = False
     try:
         dataset = load_dataset(args.task.input_repo + '_logprob', split='train')
-        dataset = dataset.with_format("torch", columns=["llama_prompt_tokens", 
-                                                        "llama_chosen_tokens", "chosen_reward", "chosen_logprob",
-                                                        "llama_reject_tokens", "reject_reward", "reject_logprob"])
+        dataset = dataset.with_format("torch", columns=logprob_columns)
         temp_dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True)
         validation_dataset = load_dataset(args.task.input_repo + '_logprob', split='test')
-        validation_dataset = validation_dataset.with_format("torch", columns=["llama_prompt_tokens", 
-                                                            "llama_chosen_tokens", "chosen_reward", "chosen_logprob",
-                                                            "llama_reject_tokens", "reject_reward", "reject_logprob"])
+        validation_dataset = validation_dataset.with_format("torch", columns=logprob_columns)
     except:
         dataset = load_dataset(args.task.input_repo, split='train')
-        dataset = dataset.with_format("torch", columns=["llama_prompt_tokens", 
-                                                        "llama_chosen_tokens", "chosen_reward",
-                                                        "llama_reject_tokens", "reject_reward"])
+        dataset = dataset.with_format("torch", columns=base_columns)
         temp_dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True)
         validation_dataset = load_dataset(args.task.input_repo, split='test')
-        validation_dataset = validation_dataset.with_format("torch", columns=["llama_prompt_tokens", 
-                                                            "llama_chosen_tokens", "chosen_reward",
-                                                            "llama_reject_tokens", "reject_reward"])
+        validation_dataset = validation_dataset.with_format("torch", columns=base_columns)
         compute_log = True
 
     if accelerator.is_main_process:
@@ -338,17 +336,13 @@ if __name__ == '__main__':
         chosen_logprob, reject_logprob = gather_all_logprob(args, accelerator.process_index, accelerator.unwrap_model(policy), tokenizer, validation_dataset, device)
         validation_dataset = validation_dataset.add_column("chosen_logprob", chosen_logprob)
         validation_dataset = validation_dataset.add_column("reject_logprob", reject_logprob)
-        validation_dataset = validation_dataset.with_format("torch", columns=["llama_prompt_tokens", 
-                                                                              "llama_chosen_tokens", "chosen_reward", "chosen_logprob",
-                                                                              "llama_reject_tokens", "reject_reward", "reject_logprob"])
+        validation_dataset = validation_dataset.with_format("torch", columns=logprob_columns)
 
         accelerator.print('gathering logprob')
         chosen_logprob, reject_logprob = gather_all_logprob(args, accelerator.process_index, accelerator.unwrap_model(policy), tokenizer, dataset, device)
         dataset = dataset.add_column("chosen_logprob", chosen_logprob)
         dataset = dataset.add_column("reject_logprob", reject_logprob)
-        dataset = dataset.with_format("torch", columns=["llama_prompt_tokens", 
-                                                        "llama_chosen_tokens", "chosen_reward", "chosen_logprob",
-                                                        "llama_reject_tokens", "reject_reward", "reject_logprob"])
+        dataset = dataset.with_format("torch", columns=logprob_columns)
         if accelerator.is_main_process:
             temp = DatasetDict({
                 "train" : dataset,
@@ -406,12 +400,13 @@ if __name__ == '__main__':
                 mb_query = data["llama_prompt_tokens"][mini_batch_start : mini_batch_end]
 
                 mb_chosen_response = data["llama_chosen_tokens"][mini_batch_start : mini_batch_end]
-                mb_chosen_reward = data["chosen_reward"][mini_batch_start : mini_batch_end]
                 mb_chosen_logprob = data["chosen_logprob"][mini_batch_start : mini_batch_end]
 
                 mb_reject_response = data["llama_reject_tokens"][mini_batch_start : mini_batch_end]
-                mb_reject_reward = data["reject_reward"][mini_batch_start : mini_batch_end]
                 mb_reject_logprob = data["reject_logprob"][mini_batch_start : mini_batch_end]
+
+                mb_g_chosen = data["g_chosen"][mini_batch_start : mini_batch_end]
+                mb_g_reject = data["g_reject"][mini_batch_start : mini_batch_end]
 
                 mb_responses = torch.cat((mb_chosen_response, mb_reject_response), dim=0)
                 mb_logprobs = torch.cat((mb_chosen_logprob, mb_reject_logprob), dim=0)
@@ -439,7 +434,7 @@ if __name__ == '__main__':
 
                 ratio_logprob = new_logprobs - mb_logprobs
                 ratio_logprob = ratio_logprob[:args.per_device_train_batch_size] - ratio_logprob[args.per_device_train_batch_size:]
-                reg_diff = ratio_logprob - args.rebel.eta * (mb_chosen_reward - mb_reject_reward)
+                reg_diff = ratio_logprob - args.rebel.eta * (mb_g_chosen - mb_g_reject)
                 loss = (reg_diff ** 2).mean()
 
                 accelerator.backward(loss)
