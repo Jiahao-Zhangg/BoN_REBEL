@@ -24,8 +24,9 @@ def parse_arguments():
     parser.add_argument("--output_repo", type=str, required=True, help="output repo for the generated reponses")
     parser.add_argument("--maxlen", type=int, default=2048)
     parser.add_argument("--start_idx", type=int, default=0)
-    parser.add_argument("--end_idx", type=int, default=30000)
-    parser.add_argument("--pairs", type=int, default=105)
+    parser.add_argument("--end_idx", type=int, default=3000)
+    parser.add_argument("--selection_pairs", type=int, default=5, help="number of pairs to use for selecting chosen/reject responses")
+    parser.add_argument("--gradient_pairs", type=int, default=5, help="number of pairs to use for gradient estimation")
     parser.add_argument("--world_size", type=int, default=4)
     return parser.parse_args()
 
@@ -56,7 +57,8 @@ def main():
     prompts = [tokenizer.apply_chat_template(get_message(row['prompt']), tokenize=False, add_generation_prompt=True) for row in tqdm(dataset)]
 
     # start generate
-    for p in range(args.pairs):
+    total_pairs = args.selection_pairs + args.gradient_pairs
+    for p in range(total_pairs):
         set_seed(p * 50)
         sampling_params = SamplingParams(
             temperature=0.8,
@@ -69,7 +71,7 @@ def main():
         dataset = dataset.add_column(f"response_{p}", output)
 
     # clean and push
-    columns = ["prompt_id", "prompt"] + [f"response_{i}" for i in range(args.pairs)]
+    columns = ["prompt_id", "prompt"] + [f"response_{i}" for i in range(total_pairs)]
     dataset = dataset.select_columns(columns)
     dataset.push_to_hub(args.output_repo)
 

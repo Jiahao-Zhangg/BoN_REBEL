@@ -20,7 +20,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from types import SimpleNamespace
 from typing import Literal, Optional
 
@@ -33,7 +33,7 @@ class REBELHParams:
 
 @dataclass
 class TaskHParams:
-    input_repo: str = None
+    input_repo: str = "zjhhhh/ultrafeedback-rebel-llama-3.2-1b-generate_armo_tokenized"
     """the output repo of filter_tokenize.py"""
     maxlen_prompt: int = 1024
     maxlen: int = 2048
@@ -281,12 +281,47 @@ if __name__ == '__main__':
                     trust_remote_code=True,
                 )
     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    
+    # Load config and fix RoPE scaling before validation
+    import json
+    from transformers.models.llama.configuration_llama import LlamaConfig
+    from transformers.utils import cached_file
+    
+    # Get the raw config file
+    config_file = cached_file(args.base_model, "config.json", token=True)
+    with open(config_file, 'r') as f:
+        config_dict = json.load(f)
+    
+    # Fix rope_scaling if it exists
+    if 'rope_scaling' in config_dict and config_dict['rope_scaling'] is not None:
+        rope_scaling = config_dict['rope_scaling']
+        if isinstance(rope_scaling, dict):
+            # Map rope_type to valid type values
+            rope_type = rope_scaling.get('rope_type', 'linear')
+            if rope_type == 'llama3':
+                rope_type = 'linear'  # Map llama3 to linear
+            elif rope_type not in ['linear', 'dynamic']:
+                rope_type = 'linear'  # Default to linear for unknown types
+            
+            # Convert to expected format
+            config_dict['rope_scaling'] = {
+                'type': rope_type,
+                'factor': rope_scaling.get('factor', 1.0)
+            }
+    
+    # Create config from modified dict
+    config = LlamaConfig.from_dict(config_dict)
+    
+    # Load model with fixed config
     policy = AutoModelForCausalLM.from_pretrained(
                 args.base_model,
+                config=config,
                 trust_remote_code=True,
                 torch_dtype=torch.bfloat16,
-                attn_implementation="flash_attention_2",
+                ignore_mismatched_sizes=True,
+                token=True,  # Use token instead of use_auth_token
             )
+    
     disable_dropout_in_model(policy)
 
     base_columns = [

@@ -17,7 +17,8 @@ def parse_arguments():
     parser.add_argument("--input_repo", type=str, required=True, help="output repo from rank.py")
     parser.add_argument("--maxlen", type=int, default=2048)
     parser.add_argument("--maxlen_prompt", type=int, default=1024)
-    parser.add_argument("--pairs", type=int, default=105)
+    parser.add_argument("--selection_pairs", type=int, default=5, help="number of pairs to use for selecting chosen/reject responses")
+    parser.add_argument("--gradient_pairs", type=int, default=5, help="number of pairs to use for gradient estimation")
     return parser.parse_args()
 
 
@@ -64,7 +65,7 @@ def main():
     # filter dataset with long prompt or response
     dataset = dataset.filter(lambda row: tokenizer.apply_chat_template(get_message(row['prompt']), tokenize=True, add_generation_prompt=True, return_tensors='pt').shape[-1] <= args.maxlen_prompt)
     print('filtered long prompts:', len(dataset))
-    for i in range(args.pairs):
+    for i in range(args.selection_pairs):
         dataset = dataset.filter(lambda row: tokenizer.apply_chat_template(get_message(response=row[f'response_{i}']), tokenize=True, add_generation_prompt=False, return_tensors='pt')[:, 5:].shape[-1] <= args.maxlen)
         print(f'filtered response_{i}:', len(dataset))
 
@@ -93,9 +94,9 @@ def main():
     
     for row in tqdm(dataset):
 
-        # 1. for the first 5 reponses, choose the one with highest reward as chosen repsonse, the one with lowest reward as reject response
-        all_rewards_5 = [row[f"response_{i}_reward"] for i in range(5)]
-        chosen_idx, reject_idx = np.argmax(all_rewards_5), np.argmin(all_rewards_5)
+        # 1. for the selection_pairs reponses, choose the one with highest reward as chosen repsonse, the one with lowest reward as reject response
+        all_rewards_selection = [row[f"response_{i}_reward"] for i in range(args.selection_pairs)]
+        chosen_idx, reject_idx = np.argmax(all_rewards_selection), np.argmin(all_rewards_selection)
 
         chosen.append(row[f"response_{chosen_idx}"])
         reject.append(row[f"response_{reject_idx}"])
@@ -128,15 +129,17 @@ def main():
         assert len(llama_reject_token) == args.maxlen
         assert llama_reject_token[-1] == 128009 or llama_reject_token[-1] == 128256
 
-        # 2. for the rest 100 responses, compute the logsumexp in the figure
-        M = 100
+        # 2. for the gradient_pairs responses, compute the logsumexp in the figure
+        M = args.gradient_pairs
         n = 2
         tau = 1e3
         constant = n / (M * tau)
-        rest_rewards = [row[f"response_{i}_reward"] for i in range(5, 105)]
+        start_idx = args.selection_pairs
+        end_idx = start_idx + args.gradient_pairs
+        rest_rewards = [row[f"response_{i}_reward"] for i in range(start_idx, end_idx)]
         
-        g_chosen = constant * sum([np.log(_chosen_reward + r) for r in rest_rewards])
-        g_reject = constant * sum([np.log(_reject_reward + r) for r in rest_rewards])
+        g_chosen = constant * sum([np.log(tau*(np.exp(_chosen_reward) + np.exp(r))) for r in rest_rewards])
+        g_reject = constant * sum([np.log(tau*(np.exp(_reject_reward) + np.exp(r))) for r in rest_rewards])
         g_chosen_list.append(g_chosen)
         g_reject_list.append(g_reject)
 

@@ -13,7 +13,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--reward_model", type=str, default="RLHFlow/ArmoRM-Llama3-8B-v0.1")
     parser.add_argument("--input_repo", type=str, required=True, help="output repo from generate.py")
-    parser.add_argument("--pairs", type=int, default=105)
+    parser.add_argument("--selection_pairs", type=int, default=5, help="number of pairs to use for selecting chosen/reject responses")
+    parser.add_argument("--gradient_pairs", type=int, default=5, help="number of pairs to use for gradient estimation")
     return parser.parse_args()
 
 
@@ -62,7 +63,8 @@ def main():
     rm = ArmoRMPipeline(args.reward_model, trust_remote_code=True)
 
     # gather reward
-    for i in range(args.pairs):
+    total_pairs = args.selection_pairs + args.gradient_pairs
+    for i in range(total_pairs):
         print(f'gathering reward for {i+1}th response')
         rewards[f"response_{i}_reward"] = []
         for row in tqdm(dataset):
