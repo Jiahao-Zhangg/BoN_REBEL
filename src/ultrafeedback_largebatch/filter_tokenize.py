@@ -138,8 +138,8 @@ def main():
         end_idx = start_idx + args.gradient_pairs
         rest_rewards = [row[f"response_{i}_reward"] for i in range(start_idx, end_idx)]
         
-        g_chosen = constant * sum([np.log(tau*(np.exp(_chosen_reward) + np.exp(r))) for r in rest_rewards])
-        g_reject = constant * sum([np.log(tau*(np.exp(_reject_reward) + np.exp(r))) for r in rest_rewards])
+        g_chosen = constant * sum([np.log((np.exp(tau*_chosen_reward) + np.exp(tau*r))) for r in rest_rewards])
+        g_reject = constant * sum([np.log((np.exp(tau*_reject_reward) + np.exp(tau*r))) for r in rest_rewards])
         g_chosen_list.append(g_chosen)
         g_reject_list.append(g_reject)
 
