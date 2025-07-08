@@ -28,7 +28,9 @@ from typing import Literal, Optional
 @dataclass
 class REBELHParams:
     num_updates: tyro.conf.Suppress[int] = 1000
-    eta: float = 1e6
+    eta: float = 1e6 # used to be 1e6
+    bon: bool = True
+    """If True, use current method. If False, use original REBEL with reward gap."""
 
 
 @dataclass
@@ -59,7 +61,7 @@ class Args:
     # optimizer args
     eps: float = 1e-8
     """the epsilon value for the optimizer"""
-    lr: float = 3e-7
+    lr: float = 5e-8 # used to be 3e-7
     """learning rate"""
     weight_decay: float = 1e-6
     """the learning rate"""
@@ -67,6 +69,10 @@ class Args:
     """Which optimizer to use"""
     warmup_ratio: float = 0.1
     """warmup ratio"""
+    max_grad_norm: float = 1.0
+    """maximum gradient norm for clipping"""
+    enable_grad_clip: bool = False
+    """whether to enable gradient clipping (set to False to just monitor norms first)"""
 
     gradient_accumulation_steps: int = 64
     """The number of gradient accumulation steps"""
@@ -221,7 +227,12 @@ def evaluate(args, policy, tokenizer, dataloader):
             ratio_logprob = new_logprobs - logprobs
             ratio_logprob = ratio_logprob[:args.per_device_eval_batch_size] - ratio_logprob[args.per_device_eval_batch_size:]
 
-            reg_diff = ratio_logprob - args.rebel.eta * (data["g_chosen"] - data["g_reject"])
+            if args.rebel.bon:
+                reg_diff = ratio_logprob - args.rebel.eta * (data["g_chosen"] - data["g_reject"])
+            else:
+                chosen_reward = data["chosen_reward"]
+                reject_reward = data["reject_reward"]
+                reg_diff = ratio_logprob - args.rebel.eta * (chosen_reward - reject_reward)
             loss.append((reg_diff ** 2).mean().reshape(1))
 
             sign_align.append((ratio_logprob > 0).float().mean().reshape(1))
@@ -244,7 +255,10 @@ if __name__ == '__main__':
     args.world_size = accelerator.num_processes
     args.batch_size = args.world_size * args.per_device_train_batch_size * args.gradient_accumulation_steps
     args.local_batch_size = args.per_device_train_batch_size * args.gradient_accumulation_steps
-    args.rebel.num_updates = args.total_episodes // args.batch_size
+    args.rebel.num_updates = args.total_episodes // args.batch_size 
+    print(f"total_episodes: {args.total_episodes}")
+    print(f"batch_size: {args.batch_size}")
+    print(f"num_updates: {args.rebel.num_updates}")
 
     # logging
     console = Console(force_terminal=True)
@@ -406,6 +420,7 @@ if __name__ == '__main__':
     reject_kl_stats = torch.zeros(args.gradient_accumulation_steps, device=device)
     loss_stats = torch.zeros(args.gradient_accumulation_steps, device=device)
     ratio_stats = torch.zeros(args.gradient_accumulation_steps, device=device)
+    grad_norm_stats = torch.zeros(args.gradient_accumulation_steps, device=device)
 
     policy.train()
     for update in tqdm(range(1, args.rebel.num_updates + 1)):
@@ -430,6 +445,55 @@ if __name__ == '__main__':
         # training
         data = next(iter_dataloader)
 
+        # Debug: Write sample data to file for first update
+        if update == 1:
+            debug_file = f"debug_log_{run_name}.txt"
+            with open(debug_file, 'w') as f:
+                f.write("="*80 + "\n")
+                f.write("DEBUGGING: Sample data from first batch\n")
+                f.write("="*80 + "\n\n")
+                
+                # Write sample prompt (decode first few tokens to see the text)
+                sample_prompt = data["llama_prompt_tokens"][0]
+                prompt_text = tokenizer.decode(sample_prompt[sample_prompt != tokenizer.pad_token_id][:100], skip_special_tokens=True)
+                f.write(f"Sample Prompt (first 100 chars): {prompt_text[:100]}...\n\n")
+                
+                # Write sample chosen response
+                sample_chosen = data["llama_chosen_tokens"][0]
+                chosen_text = tokenizer.decode(sample_chosen[sample_chosen != tokenizer.pad_token_id][:50], skip_special_tokens=True)
+                f.write(f"Sample Chosen Response: {chosen_text}\n\n")
+                
+                # Write sample reject response
+                sample_reject = data["llama_reject_tokens"][0]
+                reject_text = tokenizer.decode(sample_reject[sample_reject != tokenizer.pad_token_id][:50], skip_special_tokens=True)
+                f.write(f"Sample Reject Response: {reject_text}\n\n")
+                
+                # Write rewards
+                f.write(f"Chosen Reward: {data['chosen_reward'][0].item():.6f}\n")
+                f.write(f"Reject Reward: {data['reject_reward'][0].item():.6f}\n")
+                f.write(f"Reward Difference: {(data['chosen_reward'][0] - data['reject_reward'][0]).item():.6f}\n\n")
+                
+                # Write g values if available
+                if 'g_chosen' in data:
+                    f.write(f"G Chosen: {data['g_chosen'][0].item():.6f}\n")
+                    f.write(f"G Reject: {data['g_reject'][0].item():.6f}\n")
+                    f.write(f"G Difference: {(data['g_chosen'][0] - data['g_reject'][0]).item():.6f}\n\n")
+                
+                # Write logprobs
+                f.write(f"Chosen Logprob: {data['chosen_logprob'][0].item():.6f}\n")
+                f.write(f"Reject Logprob: {data['reject_logprob'][0].item():.6f}\n\n")
+                
+                # Write batch statistics
+                f.write(f"Batch Statistics:\n")
+                f.write(f"Reward diff mean: {(data['chosen_reward'] - data['reject_reward']).mean().item():.6f}\n")
+                f.write(f"Reward diff std: {(data['chosen_reward'] - data['reject_reward']).std().item():.6f}\n")
+                f.write(f"Reward diff min: {(data['chosen_reward'] - data['reject_reward']).min().item():.6f}\n")
+                f.write(f"Reward diff max: {(data['chosen_reward'] - data['reject_reward']).max().item():.6f}\n\n")
+                
+                f.write("="*80 + "\n\n")
+            
+            accelerator.print(f"Debug information written to: {debug_file}")
+
         gradient_accumulation_idx = 0
         for mini_batch_start in range(0, args.local_batch_size, args.per_device_train_batch_size):
             mini_batch_end = mini_batch_start + args.per_device_train_batch_size
@@ -444,6 +508,9 @@ if __name__ == '__main__':
 
                 mb_g_chosen = data["g_chosen"][mini_batch_start : mini_batch_end]
                 mb_g_reject = data["g_reject"][mini_batch_start : mini_batch_end]
+
+                mb_chosen_reward = data["chosen_reward"][mini_batch_start : mini_batch_end]
+                mb_reject_reward = data["reject_reward"][mini_batch_start : mini_batch_end]
 
                 mb_responses = torch.cat((mb_chosen_response, mb_reject_response), dim=0)
                 mb_logprobs = torch.cat((mb_chosen_logprob, mb_reject_logprob), dim=0)
@@ -471,10 +538,50 @@ if __name__ == '__main__':
 
                 ratio_logprob = new_logprobs - mb_logprobs
                 ratio_logprob = ratio_logprob[:args.per_device_train_batch_size] - ratio_logprob[args.per_device_train_batch_size:]
-                reg_diff = ratio_logprob - args.rebel.eta * (mb_g_chosen - mb_g_reject)
+                
+                if args.rebel.bon:
+                    reg_diff = ratio_logprob - args.rebel.eta * (mb_g_chosen - mb_g_reject)
+                else:
+                    reward_diff = mb_chosen_reward - mb_reject_reward
+                    reg_diff = ratio_logprob - args.rebel.eta * reward_diff
+                
+                # Debug: Write loss calculation values to file for first mini-batch of first update
+                if update == 1 and gradient_accumulation_idx == 0:
+                    debug_file = f"debug_log_{run_name}.txt"
+                    with open(debug_file, 'a') as f:  # append mode
+                        f.write("LOSS CALCULATION DEBUG:\n")
+                        f.write("-" * 40 + "\n")
+                        f.write(f"ratio_logprob: mean={ratio_logprob.mean().item():.6f}, std={ratio_logprob.std().item():.6f}\n")
+                        if args.rebel.bon:
+                            g_diff = mb_g_chosen - mb_g_reject
+                            f.write(f"g_diff: mean={g_diff.mean().item():.6f}, std={g_diff.std().item():.6f}\n")
+                            f.write(f"eta * g_diff: mean={(args.rebel.eta * g_diff).mean().item():.6f}\n")
+                        else:
+                            f.write(f"reward_diff: mean={reward_diff.mean().item():.6f}, std={reward_diff.std().item():.6f}\n")
+                            f.write(f"eta * reward_diff: mean={(args.rebel.eta * reward_diff).mean().item():.6f}\n")
+                        f.write(f"reg_diff: mean={reg_diff.mean().item():.6f}, std={reg_diff.std().item():.6f}\n")
+                        f.write(f"reg_diff squared (loss): mean={(reg_diff ** 2).mean().item():.6f}\n")
+                        f.write("-" * 40 + "\n\n")
+                    
                 loss = (reg_diff ** 2).mean()
 
                 accelerator.backward(loss)
+                
+                # Gradient norm computation and optional clipping
+                grad_norm = 0.0
+                if accelerator.sync_gradients:
+                    # Always compute gradient norm for monitoring
+                    total_norm = 0.0
+                    for p in policy.parameters():
+                        if p.grad is not None:
+                            param_norm = p.grad.data.norm(2)
+                            total_norm += param_norm.item() ** 2
+                    grad_norm = total_norm ** (1. / 2)
+                    
+                    # Only clip if enabled
+                    if args.enable_grad_clip:
+                        torch.nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
+                
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
@@ -486,8 +593,11 @@ if __name__ == '__main__':
                     reject_kl_stats[gradient_accumulation_idx] = logprobs_diff[args.per_device_train_batch_size:].mean()
                     loss_stats[gradient_accumulation_idx] = loss
                     ratio_stats[gradient_accumulation_idx] = ratio.mean()
+                    grad_norm_stats[gradient_accumulation_idx] = grad_norm
             gradient_accumulation_idx += 1
         if accelerator.is_main_process:
+            grad_norm_mean = grad_norm_stats.mean().item()
+            clip_status = f"(clip={args.enable_grad_clip})" if args.enable_grad_clip else "(monitoring)"
             console.print(
                 f"update",
                 update,
@@ -495,6 +605,8 @@ if __name__ == '__main__':
                 kl_stats.mean().item(),
                 "loss",
                 loss_stats.mean().item(),
+                "grad_norm",
+                f"{grad_norm_mean:.4f}{clip_status}",
             )
 
         with torch.no_grad():
@@ -506,6 +618,7 @@ if __name__ == '__main__':
             
             writer.add_scalar("rebel/val/ratio", accelerator.gather(ratio_stats).mean().item(), update)
             writer.add_scalar("rebel/val/ratio_var", accelerator.gather(ratio_stats).var().item(), update)
+            writer.add_scalar("rebel/grad_norm", accelerator.gather(grad_norm_stats).mean().item(), update)
             writer.add_scalar("rebel/lr", lrnow, update)
             writer.add_scalar("rebel/episode", global_step, update)
             eps = int(global_step / (time.time() - start_time))
