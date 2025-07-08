@@ -39,7 +39,7 @@ def get_message(instruction):
 
 
 def main():
-
+    """Note: if you run into CUDA/NCCL errors, upgrade VLLM."""
     # init
     args = parse_arguments()
     tokenizer = AutoTokenizer.from_pretrained(args.model)
@@ -58,16 +58,17 @@ def main():
 
     # start generate
     total_pairs = args.selection_pairs + args.gradient_pairs
+    set_seed(0)
+    sampling_params = SamplingParams(
+        n=total_pairs,
+        temperature=0.8,
+        top_p=0.9,
+        max_tokens=args.maxlen,
+        seed=0,
+    )
+    response = llm.generate(prompts, sampling_params)
     for p in range(total_pairs):
-        set_seed(p * 50)
-        sampling_params = SamplingParams(
-            temperature=0.8,
-            top_p=0.9,
-            max_tokens=args.maxlen,
-            seed=p * 50,
-        )
-        response = llm.generate(prompts, sampling_params)
-        output = list(map(lambda x: x.outputs[0].text, response))
+        output = list(map(lambda x: x.outputs[p].text, response))
         dataset = dataset.add_column(f"response_{p}", output)
 
     # clean and push

@@ -70,9 +70,7 @@ def main():
         print(f'filtered response_{i}:', len(dataset))
 
     # add prompt tokens
-    llama_prompts = []
-    llama_prompt_tokens = []
-    for row in tqdm(dataset):
+    def tokenize_prompt(row):
         llama_prompt_token = tokenizer_left.apply_chat_template(
                 get_message(row['prompt']), 
                 add_generation_prompt=True,
@@ -83,23 +81,22 @@ def main():
         llama_prompt = tokenizer_left.decode(llama_prompt_token, skip_special_tokens=False)
         assert len(llama_prompt_token) == args.maxlen_prompt
         assert (llama_prompt_token[0] == 128000 or llama_prompt_token[0] == 128256) and llama_prompt_token[-1] == 271
-        llama_prompts.append(llama_prompt)
-        llama_prompt_tokens.append(llama_prompt_token)
-    dataset = dataset.add_column("llama_prompt", llama_prompts)
-    dataset = dataset.add_column("llama_prompt_tokens", llama_prompt_tokens)
+        row['llama_prompt'] = llama_prompt
+        row['llama_prompt_tokens'] = llama_prompt_token
+        return row
+    dataset = dataset.map(tokenize_prompt, num_proc=4)
 
-    # select chosen and reject
-    chosen, reject, llama_chosen, llama_reject, llama_chosen_tokens, llama_reject_tokens, chosen_reward, reject_reward = [], [], [], [], [], [], [], []
-    g_chosen_list, g_reject_list = [], []
-    
-    for row in tqdm(dataset):
+    # select chosen and reject    
+    def select_chosen_and_reject(row):
 
         # 1. for the selection_pairs reponses, choose the one with highest reward as chosen repsonse, the one with lowest reward as reject response
         all_rewards_selection = [row[f"response_{i}_reward"] for i in range(args.selection_pairs)]
         chosen_idx, reject_idx = np.argmax(all_rewards_selection), np.argmin(all_rewards_selection)
 
-        chosen.append(row[f"response_{chosen_idx}"])
-        reject.append(row[f"response_{reject_idx}"])
+        row["chosen"] = row[f"response_{chosen_idx}"]
+        row["chosen_reward"] = chosen_reward = row[f"response_{chosen_idx}_reward"]
+        row["reject"] = row[f"response_{reject_idx}"]
+        row["reject_reward"] = reject_reward = row[f"response_{reject_idx}_reward"]
 
         llama_chosen_token = tokenizer.apply_chat_template(
                 get_message(response=row[f"response_{chosen_idx}"]),
@@ -108,12 +105,12 @@ def main():
                 padding='max_length',
                 max_length=args.maxlen+5,
         )[5:]
-        llama_chosen_tokens.append(llama_chosen_token)
-        llama_chosen.append(tokenizer.decode(llama_chosen_token, skip_special_tokens=False))
-        _chosen_reward = row[f"response_{chosen_idx}_reward"]
-        chosen_reward.append(_chosen_reward)
+        llama_chosen_tokens = llama_chosen_token
+        llama_chosen = tokenizer.decode(llama_chosen_token, skip_special_tokens=False)
         assert len(llama_chosen_token) == args.maxlen
         assert llama_chosen_token[-1] == 128009 or llama_chosen_token[-1] == 128256
+        row["llama_chosen"] = llama_chosen
+        row["llama_chosen_tokens"] = llama_chosen_tokens
 
         llama_reject_token = tokenizer.apply_chat_template(
                 get_message(response=row[f"response_{reject_idx}"]),
@@ -122,12 +119,12 @@ def main():
                 padding='max_length',
                 max_length=args.maxlen+5,
         )[5:]
-        llama_reject_tokens.append(llama_reject_token)
-        llama_reject.append(tokenizer.decode(llama_reject_token, skip_special_tokens=False))
-        _reject_reward = row[f"response_{reject_idx}_reward"]
-        reject_reward.append(_reject_reward)
+        llama_reject_tokens = llama_reject_token
+        llama_reject = tokenizer.decode(llama_reject_token, skip_special_tokens=False)
         assert len(llama_reject_token) == args.maxlen
         assert llama_reject_token[-1] == 128009 or llama_reject_token[-1] == 128256
+        row["llama_reject"] = llama_reject
+        row["llama_reject_tokens"] = llama_reject_tokens
 
         # 2. for the gradient_pairs responses, compute the logsumexp in the figure
         M = args.gradient_pairs
@@ -137,22 +134,13 @@ def main():
         start_idx = args.selection_pairs
         end_idx = start_idx + args.gradient_pairs
         rest_rewards = [row[f"response_{i}_reward"] for i in range(start_idx, end_idx)]
-        
-        g_chosen = constant * sum([np.log(tau*(np.exp(_chosen_reward) + np.exp(r))) for r in rest_rewards])
-        g_reject = constant * sum([np.log(tau*(np.exp(_reject_reward) + np.exp(r))) for r in rest_rewards])
-        g_chosen_list.append(g_chosen)
-        g_reject_list.append(g_reject)
+        g_chosen = constant * sum([np.log(tau*(np.exp(chosen_reward) + np.exp(r))) for r in rest_rewards])
+        g_reject = constant * sum([np.log(tau*(np.exp(reject_reward) + np.exp(r))) for r in rest_rewards])
+        row["g_chosen"] = g_chosen
+        row["g_reject"] = g_reject
+        return row
 
-    dataset = dataset.add_column("chosen", chosen)
-    dataset = dataset.add_column("chosen_reward", chosen_reward)
-    dataset = dataset.add_column("llama_chosen", llama_chosen)
-    dataset = dataset.add_column("llama_chosen_tokens", llama_chosen_tokens)
-    dataset = dataset.add_column("reject", reject)
-    dataset = dataset.add_column("reject_reward", reject_reward)
-    dataset = dataset.add_column("llama_reject", llama_reject)
-    dataset = dataset.add_column("llama_reject_tokens", llama_reject_tokens)
-    dataset = dataset.add_column("g_chosen", g_chosen_list)
-    dataset = dataset.add_column("g_reject", g_reject_list)
+    dataset = dataset.map(select_chosen_and_reject, num_proc=4)
 
     # filter prompts with exactly same responses
     dataset = dataset.filter(lambda row: filter_same_responses(row))
