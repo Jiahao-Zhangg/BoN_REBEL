@@ -33,10 +33,10 @@ class REBELHParams:
 
 @dataclass
 class TaskHParams:
-    input_repo: str = "zjhhhh/ultrafeedback-rebel-llama-3.2-1b-generate_armo_tokenized"
+    input_repo: str = "kmg42/ultrafeedback_rebel_llama_3_2_1b_armo_tokenized"
     """the output repo of filter_tokenize.py"""
-    maxlen_prompt: int = 1024
-    maxlen: int = 2048
+    maxlen_prompt: int = 512
+    maxlen: int = 1024
     temperature: float = 0.8
 
 
@@ -47,7 +47,7 @@ class Args:
     """the name of this experiment"""
     seed: int = 555134
     """seed of the experiment"""
-    track: bool = True
+    track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "ultrafeedback"
     """the wandb's project name"""
@@ -68,13 +68,13 @@ class Args:
     warmup_ratio: float = 0.1
     """warmup ratio"""
 
-    gradient_accumulation_steps: int = 16
+    gradient_accumulation_steps: int = 64
     """The number of gradient accumulation steps"""
     per_device_train_batch_size: int = 1
     """The micro batch size per GPU (HF's `per_device_train_batch_size`)"""
     per_device_eval_batch_size: int = 1
     """per rank eval batch size"""
-    total_episodes: int = 30000
+    total_episodes: int = 60000
     """The total number of episodes to train"""
 
     # optional args filled while running
@@ -88,7 +88,7 @@ class Args:
     # other args
     base_model: str = "meta-llama/Llama-3.2-1B-Instruct"
     """the name of the pretrained model to use"""
-    output_dir: str = None
+    output_dir: str = "models/ultrafeedback_rebel"
     """Where to save the model"""
     task: TaskHParams = field(default_factory=TaskHParams)
     rebel: REBELHParams = field(default_factory=REBELHParams)
@@ -211,7 +211,7 @@ def evaluate(args, policy, tokenizer, dataloader):
                 input_ids=input_ids, 
                 attention_mask=attention_mask,
                 return_dict=True,
-                output_hidden_states=True,
+                output_hidden_states=False,
             )
             logits = output.logits[:, args.task.maxlen_prompt - 1 : -1]
             logits /= args.task.temperature + 1e-7
@@ -261,10 +261,10 @@ if __name__ == '__main__':
                 sync_tensorboard=True,
                 config=asdict(args),
                 name=run_name,
-                save_code=True,
+                save_code=False,
             )
-            file_extensions = [".toml", ".lock", ".py", ".sh", ".yaml"]
-            wandb.run.log_code(".", include_fn=lambda path: any([path.endswith(ext) for ext in file_extensions]))
+            # file_extensions = [".toml", ".lock", ".py", ".sh", ".yaml"]
+            # wandb.run.log_code(".", include_fn=lambda path: any([path.endswith(ext) for ext in file_extensions]))
         writer = SummaryWriter(f"runs/{run_name}")
         writer.add_text(
             "hyperparameters",
@@ -318,11 +318,13 @@ if __name__ == '__main__':
                 config=config,
                 trust_remote_code=True,
                 torch_dtype=torch.bfloat16,
-                ignore_mismatched_sizes=True,
+                ignore_mismatched_sizes=False,
                 token=True,  # Use token instead of use_auth_token
+                attn_implementation="flash_attention_2",
             )
     
     disable_dropout_in_model(policy)
+    policy.gradient_checkpointing_enable()
 
     base_columns = [
         "llama_prompt_tokens", "llama_chosen_tokens", "chosen_reward",
@@ -385,7 +387,7 @@ if __name__ == '__main__':
             })
             temp.push_to_hub(args.task.input_repo + '_logprob')
 
-    dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True, drop_last=True)
     validation_dataloader = DataLoader(validation_dataset, batch_size=args.per_device_eval_batch_size, shuffle=False)
     dataloader = accelerator.prepare(dataloader)
     validation_dataloader = accelerator.prepare(validation_dataloader)
@@ -406,7 +408,7 @@ if __name__ == '__main__':
     ratio_stats = torch.zeros(args.gradient_accumulation_steps, device=device)
 
     policy.train()
-    for update in range(1, args.rebel.num_updates + 1):
+    for update in tqdm(range(1, args.rebel.num_updates + 1)):
 
         # update parameters
         global_step += 1 * args.batch_size
@@ -456,7 +458,7 @@ if __name__ == '__main__':
                     input_ids=input_ids, 
                     attention_mask=attention_mask,
                     return_dict=True,
-                    output_hidden_states=True,
+                    output_hidden_states=False,
                 )
                 logits = output.logits[:, args.task.maxlen_prompt - 1 : -1]
                 logits /= args.task.temperature + 1e-7
