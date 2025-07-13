@@ -20,7 +20,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from types import SimpleNamespace
 from typing import Literal, Optional
 
@@ -28,14 +28,14 @@ from typing import Literal, Optional
 @dataclass
 class REBELHParams:
     num_updates: tyro.conf.Suppress[int] = 1000
-    eta: float = 1e6 # used to be 1e6
+    eta: float = 1e6 * 2
     bon: bool = True
     """If True, use current method. If False, use original REBEL with reward gap."""
 
 
 @dataclass
 class TaskHParams:
-    input_repo: str = "zjhhhh/ultrafeedback-rebel-llama-3.2-1b-generate_armo_tokenized"
+    input_repo: str = None
     """the output repo of filter_tokenize.py"""
     maxlen_prompt: int = 1024
     maxlen: int = 2048
@@ -55,13 +55,13 @@ class Args:
     """the wandb's project name"""
     run_name: Optional[str] = None
     """a unique name of this run"""
-    print_sample_output_freq: int = 200
+    print_sample_output_freq: int = 50
     """How often to print sample output"""
 
     # optimizer args
     eps: float = 1e-8
     """the epsilon value for the optimizer"""
-    lr: float = 5e-8 # used to be 3e-7
+    lr: float = 3e-7
     """learning rate"""
     weight_decay: float = 1e-6
     """the learning rate"""
@@ -80,11 +80,11 @@ class Args:
     """The micro batch size per GPU (HF's `per_device_train_batch_size`)"""
     per_device_eval_batch_size: int = 1
     """per rank eval batch size"""
-    total_episodes: int = 3000
+    total_episodes: int = 60000
     """The total number of episodes to train"""
 
     # optional args filled while running
-    world_size: Optional[int] = 4
+    world_size: Optional[int] = 2
     """The number of processes (GPUs) to use"""
     batch_size: Optional[int] = 128
     """The batch size across devices (HF's `per_device_train_batch_size` * `world_size` * `gradient_accumulation_steps`)"""
@@ -92,7 +92,7 @@ class Args:
     """The batch size per GPU (HF's `per_device_train_batch_size` * `gradient_accumulation_steps`)"""
 
     # other args
-    base_model: str = "meta-llama/Llama-3.2-1B-Instruct"
+    base_model: str = "meta-llama/Llama-3.2-3B-Instruct"
     """the name of the pretrained model to use"""
     output_dir: str = None
     """Where to save the model"""
@@ -295,47 +295,13 @@ if __name__ == '__main__':
                     trust_remote_code=True,
                 )
     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    
-    # Load config and fix RoPE scaling before validation
-    import json
-    from transformers.models.llama.configuration_llama import LlamaConfig
-    from transformers.utils import cached_file
-    
-    # Get the raw config file
-    config_file = cached_file(args.base_model, "config.json", token=True)
-    with open(config_file, 'r') as f:
-        config_dict = json.load(f)
-    
-    # Fix rope_scaling if it exists
-    if 'rope_scaling' in config_dict and config_dict['rope_scaling'] is not None:
-        rope_scaling = config_dict['rope_scaling']
-        if isinstance(rope_scaling, dict):
-            # Map rope_type to valid type values
-            rope_type = rope_scaling.get('rope_type', 'linear')
-            if rope_type == 'llama3':
-                rope_type = 'linear'  # Map llama3 to linear
-            elif rope_type not in ['linear', 'dynamic']:
-                rope_type = 'linear'  # Default to linear for unknown types
-            
-            # Convert to expected format
-            config_dict['rope_scaling'] = {
-                'type': rope_type,
-                'factor': rope_scaling.get('factor', 1.0)
-            }
-    
-    # Create config from modified dict
-    config = LlamaConfig.from_dict(config_dict)
-    
-    # Load model with fixed config
+    print(f"Loading model from {args.base_model}")
     policy = AutoModelForCausalLM.from_pretrained(
-                args.base_model,
-                config=config,
-                trust_remote_code=True,
-                torch_dtype=torch.bfloat16,
-                ignore_mismatched_sizes=True,
-                token=True,  # Use token instead of use_auth_token
-            )
-    
+                    args.base_model,
+                    trust_remote_code=True,
+                    torch_dtype=torch.bfloat16,
+                    attn_implementation="flash_attention_2",
+                )
     disable_dropout_in_model(policy)
 
     base_columns = [
@@ -443,55 +409,6 @@ if __name__ == '__main__':
         # training
         data = next(iter_dataloader)
 
-        # Debug: Write sample data to file for first update
-        if update == 1:
-            debug_file = f"debug_log_{run_name}.txt"
-            with open(debug_file, 'w') as f:
-                f.write("="*80 + "\n")
-                f.write("DEBUGGING: Sample data from first batch\n")
-                f.write("="*80 + "\n\n")
-                
-                # Write sample prompt (decode first few tokens to see the text)
-                sample_prompt = data["llama_prompt_tokens"][0]
-                prompt_text = tokenizer.decode(sample_prompt[sample_prompt != tokenizer.pad_token_id][:100], skip_special_tokens=True)
-                f.write(f"Sample Prompt (first 100 chars): {prompt_text[:100]}...\n\n")
-                
-                # Write sample chosen response
-                sample_chosen = data["llama_chosen_tokens"][0]
-                chosen_text = tokenizer.decode(sample_chosen[sample_chosen != tokenizer.pad_token_id][:50], skip_special_tokens=True)
-                f.write(f"Sample Chosen Response: {chosen_text}\n\n")
-                
-                # Write sample reject response
-                sample_reject = data["llama_reject_tokens"][0]
-                reject_text = tokenizer.decode(sample_reject[sample_reject != tokenizer.pad_token_id][:50], skip_special_tokens=True)
-                f.write(f"Sample Reject Response: {reject_text}\n\n")
-                
-                # Write rewards
-                f.write(f"Chosen Reward: {data['chosen_reward'][0].item():.6f}\n")
-                f.write(f"Reject Reward: {data['reject_reward'][0].item():.6f}\n")
-                f.write(f"Reward Difference: {(data['chosen_reward'][0] - data['reject_reward'][0]).item():.6f}\n\n")
-                
-                # Write g values if available
-                if 'g_chosen' in data:
-                    f.write(f"G Chosen: {data['g_chosen'][0].item():.6f}\n")
-                    f.write(f"G Reject: {data['g_reject'][0].item():.6f}\n")
-                    f.write(f"G Difference: {(data['g_chosen'][0] - data['g_reject'][0]).item():.6f}\n\n")
-                
-                # Write logprobs
-                f.write(f"Chosen Logprob: {data['chosen_logprob'][0].item():.6f}\n")
-                f.write(f"Reject Logprob: {data['reject_logprob'][0].item():.6f}\n\n")
-                
-                # Write batch statistics
-                f.write(f"Batch Statistics:\n")
-                f.write(f"Reward diff mean: {(data['chosen_reward'] - data['reject_reward']).mean().item():.6f}\n")
-                f.write(f"Reward diff std: {(data['chosen_reward'] - data['reject_reward']).std().item():.6f}\n")
-                f.write(f"Reward diff min: {(data['chosen_reward'] - data['reject_reward']).min().item():.6f}\n")
-                f.write(f"Reward diff max: {(data['chosen_reward'] - data['reject_reward']).max().item():.6f}\n\n")
-                
-                f.write("="*80 + "\n\n")
-            
-            accelerator.print(f"Debug information written to: {debug_file}")
-
         gradient_accumulation_idx = 0
         for mini_batch_start in range(0, args.local_batch_size, args.per_device_train_batch_size):
             mini_batch_end = mini_batch_start + args.per_device_train_batch_size
@@ -543,23 +460,6 @@ if __name__ == '__main__':
                     reward_diff = mb_chosen_reward - mb_reject_reward
                     reg_diff = ratio_logprob - args.rebel.eta * reward_diff
                 
-                # Debug: Write loss calculation values to file for first mini-batch of first update
-                if update == 1 and gradient_accumulation_idx == 0:
-                    debug_file = f"debug_log_{run_name}.txt"
-                    with open(debug_file, 'a') as f:  # append mode
-                        f.write("LOSS CALCULATION DEBUG:\n")
-                        f.write("-" * 40 + "\n")
-                        f.write(f"ratio_logprob: mean={ratio_logprob.mean().item():.6f}, std={ratio_logprob.std().item():.6f}\n")
-                        if args.rebel.bon:
-                            g_diff = mb_g_chosen - mb_g_reject
-                            f.write(f"g_diff: mean={g_diff.mean().item():.6f}, std={g_diff.std().item():.6f}\n")
-                            f.write(f"eta * g_diff: mean={(args.rebel.eta * g_diff).mean().item():.6f}\n")
-                        else:
-                            f.write(f"reward_diff: mean={reward_diff.mean().item():.6f}, std={reward_diff.std().item():.6f}\n")
-                            f.write(f"eta * reward_diff: mean={(args.rebel.eta * reward_diff).mean().item():.6f}\n")
-                        f.write(f"reg_diff: mean={reg_diff.mean().item():.6f}, std={reg_diff.std().item():.6f}\n")
-                        f.write(f"reg_diff squared (loss): mean={(reg_diff ** 2).mean().item():.6f}\n")
-                        f.write("-" * 40 + "\n\n")
                     
                 loss = (reg_diff ** 2).mean()
 
