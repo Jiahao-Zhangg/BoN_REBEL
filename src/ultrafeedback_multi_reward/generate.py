@@ -8,6 +8,8 @@ import torch
 import random
 import numpy as np
 
+from utils import get_message
+
 
 def set_seed(seed=5775709):
     random.seed(seed)
@@ -19,27 +21,20 @@ def set_seed(seed=5775709):
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
+    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-3B-Instruct")
     parser.add_argument("--prompts", type=str, default="allenai/ultrafeedback_binarized_cleaned_train")
     parser.add_argument("--output_repo", type=str, required=True, help="output repo for the generated reponses")
     parser.add_argument("--maxlen", type=int, default=2048)
     parser.add_argument("--start_idx", type=int, default=0)
     parser.add_argument("--end_idx", type=int, default=3000)
-    parser.add_argument("--selection_pairs", type=int, default=5, help="number of pairs to use for selecting chosen/reject responses")
-    parser.add_argument("--gradient_pairs", type=int, default=5, help="number of pairs to use for gradient estimation")
+    parser.add_argument("--selection_pairs", type=int, default=3, help="number of pairs to use for selecting chosen/reject responses")
+    parser.add_argument("--gradient_pairs", type=int, default=3, help="number of pairs to use for gradient estimation")
     parser.add_argument("--world_size", type=int, default=4)
     return parser.parse_args()
 
 
-def get_message(instruction):
-    message = [
-        {"role": "user", "content": instruction},
-    ]
-    return message
-
-
 def main():
-    """Note: if you run into CUDA/NCCL errors, upgrade VLLM."""
+
     # init
     args = parse_arguments()
     tokenizer = AutoTokenizer.from_pretrained(args.model)
@@ -58,17 +53,16 @@ def main():
 
     # start generate
     total_pairs = args.selection_pairs + args.gradient_pairs
-    set_seed(0)
-    sampling_params = SamplingParams(
-        n=total_pairs,
-        temperature=0.8,
-        top_p=0.9,
-        max_tokens=args.maxlen,
-        seed=0,
-    )
-    response = llm.generate(prompts, sampling_params)
     for p in range(total_pairs):
-        output = list(map(lambda x: x.outputs[p].text, response))
+        set_seed(p * 50)
+        sampling_params = SamplingParams(
+            temperature=0.8,
+            top_p=0.9,
+            max_tokens=args.maxlen,
+            seed=p * 50,
+        )
+        response = llm.generate(prompts, sampling_params)
+        output = list(map(lambda x: x.outputs[0].text, response))
         dataset = dataset.add_column(f"response_{p}", output)
 
     # clean and push

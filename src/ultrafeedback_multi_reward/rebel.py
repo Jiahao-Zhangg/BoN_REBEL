@@ -29,11 +29,11 @@ from typing import Literal, Optional
 @dataclass
 class REBELHParams:
     num_updates: tyro.conf.Suppress[int] = 1000
-    eta: float = 1e4
-    bon: bool = False
+    eta: float = 1e5
+    bon: bool = True
     winrate: bool = False
     """If True, use current method. If False, use original REBEL with reward gap."""
-    n_reward_models: int = 1
+    n_reward_models: int = 2
     """The number of reward models to use"""
     weights: List[float] = field(default_factory=lambda: [0.5, 0.5])
     """The weights of the reward models"""
