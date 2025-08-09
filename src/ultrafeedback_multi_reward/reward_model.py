@@ -4,6 +4,29 @@ from typing import Dict, List, Optional
 
 
 class ArmoRMPipeline:
+
+    all_reward_names = [
+        'helpsteer-helpfulness',
+        'helpsteer-correctness',
+        'helpsteer-coherence',
+        'helpsteer-complexity',
+        'helpsteer-verbosity',
+        'ultrafeedback-overall_score',
+        'ultrafeedback-instruction_following',
+        'ultrafeedback-truthfulness',
+        'ultrafeedback-honesty',
+        'ultrafeedback-helpfulness',
+        'beavertails-is_safe',
+        'prometheus-score',
+        'argilla-overall_quality',
+        'argilla-judge_lm',
+        'code-complexity',
+        'code-style',
+        'code-explanation',
+        'code-instruction-following',
+        'code-readability',
+    ]
+
     def __init__(
         self,
         model_id: str = "RLHFlow/ArmoRM-Llama3-8B-v0.1",
@@ -36,31 +59,10 @@ class ArmoRMPipeline:
         self.reward_indices = []
         for reward_name in (reward_names or []):    # Keep as empty list if reward_names is None
             try:
-                self.reward_indices.append(self.get_all_reward_names().index(reward_name))
+                self.reward_indices.append(self.all_reward_names.index(reward_name))
             except ValueError:
                 raise ValueError(f"Reward name {reward_name} not found in the model. "
-                                f"Available reward names: {self.get_all_reward_names()}")
-
-    def get_all_reward_names(self) -> List[str]:
-        return [
-            'helpsteer-helpfulness',
-            'helpsteer-correctness',
-            'helpsteer-coherence',
-            'helpsteer-complexity',
-            'helpsteer-verbosity',
-            'ultrafeedback-overall_score',
-            'ultrafeedback-instruction_following',
-            'ultrafeedback-truthfulness',
-            'ultrafeedback-honesty',
-            'ultrafeedback-helpfulness',
-            'beavertails-is_safe',
-            'prometheus-score',
-            'argilla-overall_quality',
-            'code-style',
-            'code-explanation',
-            'code-instruction-following',
-            'code-readability',
-        ]
+                                 f"Available reward names: {self.all_reward_names}")
 
     def tokenized_len(self, message: Dict[str, str]) -> int:
         """Returns the tokenized length of the given message. Helpful for sorting messages by tokenized length."""
