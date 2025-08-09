@@ -16,11 +16,10 @@ torch.set_printoptions(threshold=10_000)
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rewards", type=str, nargs='+', help="List of rewards to use",
-                        default=["helpsteer-helpfulness", "helpsteer-correctness"])
+    parser.add_argument("--rewards", type=str, nargs='+', help="List of rewards to use", default=ArmoRMPipeline.all_reward_names)
     parser.add_argument("--input_repo", type=str, required=True, help="output repo from generate.py")
-    parser.add_argument("--selection_pairs", type=int, default=3, help="number of pairs to use for selecting chosen/reject responses")
-    parser.add_argument("--gradient_pairs", type=int, default=3, help="number of pairs to use for gradient estimation")
+    parser.add_argument("--selection_pairs", type=int, default=10, help="number of pairs to use for selecting chosen/reject responses")
+    parser.add_argument("--gradient_pairs", type=int, default=10, help="number of pairs to use for gradient estimation")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size for processing")
     return parser.parse_args()
 
