@@ -9,11 +9,13 @@ from typing import Dict, List
 
 torch.set_printoptions(threshold=10_000)
 
+# WARNING: Magic number, make sure it works for your model
+SYS_PROMPT_LEN = 30
 
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
+    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-3B-Instruct")
     parser.add_argument("--input_repo", type=str, required=True, help="output repo from rank.py")
     parser.add_argument("--maxlen", type=int, default=2048)
     parser.add_argument("--maxlen_prompt", type=int, default=1024)
@@ -66,7 +68,7 @@ def main():
     dataset = dataset.filter(lambda row: tokenizer.apply_chat_template(get_message(row['prompt']), tokenize=True, add_generation_prompt=True, return_tensors='pt').shape[-1] <= args.maxlen_prompt)
     print('filtered long prompts:', len(dataset))
     for i in range(args.selection_pairs):
-        dataset = dataset.filter(lambda row: tokenizer.apply_chat_template(get_message(response=row[f'response_{i}']), tokenize=True, add_generation_prompt=False, return_tensors='pt')[:, 5:].shape[-1] <= args.maxlen)
+        dataset = dataset.filter(lambda row: tokenizer.apply_chat_template(get_message(response=row[f'response_{i}']), tokenize=True, add_generation_prompt=False, return_tensors='pt')[:, 30:].shape[-1] <= args.maxlen)
         print(f'filtered response_{i}:', len(dataset))
 
     # add prompt tokens
@@ -106,8 +108,8 @@ def main():
                 add_generation_prompt=False,
                 tokenize=True,
                 padding='max_length',
-                max_length=args.maxlen+5,
-        )[5:]
+                max_length=args.maxlen+SYS_PROMPT_LEN,
+        )[SYS_PROMPT_LEN:]
         llama_chosen_tokens.append(llama_chosen_token)
         llama_chosen.append(tokenizer.decode(llama_chosen_token, skip_special_tokens=False))
         _chosen_reward = row[f"response_{chosen_idx}_reward"]
@@ -120,8 +122,8 @@ def main():
                 add_generation_prompt=False,
                 tokenize=True,
                 padding='max_length',
-                max_length=args.maxlen+5,
-        )[5:]
+                max_length=args.maxlen+SYS_PROMPT_LEN,
+        )[SYS_PROMPT_LEN:]
         llama_reject_tokens.append(llama_reject_token)
         llama_reject.append(tokenizer.decode(llama_reject_token, skip_special_tokens=False))
         _reject_reward = row[f"response_{reject_idx}_reward"]
