@@ -27,7 +27,7 @@ def parse_arguments():
     parser.add_argument("--end_idx", type=int, default=-1)
     parser.add_argument("--selection_pairs", type=int, default=4, help="number of pairs to use for selecting chosen/reject responses")
     parser.add_argument("--gradient_pairs", type=int, default=16, help="number of pairs to use for gradient estimation")
-    parser.add_argument("--world_size", type=int, default=4)
+    parser.add_argument("--world_size", type=int, default=8)
     return parser.parse_args()
 
 
