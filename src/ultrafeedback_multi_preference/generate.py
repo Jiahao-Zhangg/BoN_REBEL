@@ -28,6 +28,7 @@ def parse_arguments():
     parser.add_argument("--selection_pairs", type=int, default=4, help="number of pairs to use for selecting chosen/reject responses")
     parser.add_argument("--gradient_pairs", type=int, default=16, help="number of pairs to use for gradient estimation")
     parser.add_argument("--world_size", type=int, default=8)
+    parser.add_argument("--gpu_memory_utilization", type=float, default=0.8, help="GPU memory utilization ratio")
     return parser.parse_args()
 
 
@@ -46,6 +47,7 @@ def main():
     llm = LLM(
         model=args.model,
         tensor_parallel_size=args.world_size,
+        gpu_memory_utilization=args.gpu_memory_utilization,
     )
 
     # dataset
