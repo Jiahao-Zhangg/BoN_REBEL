@@ -24,6 +24,8 @@ PREFERENCE_TERNARY_GUIDED_DECODING = GuidedDecodingParams(choice=["A", "B", "Tie
 
 PREFERENCE_SCORE_GUIDED_DECODING = GuidedDecodingParams(choice=[str(i) for i in range(11)])
 
+PREFERENCE_5SCORE_GUIDED_DECODING = GuidedDecodingParams(choice=[str(i) for i in range(-1, 5)])
+
 
 ## You can also do more complex guided decoding with Pydantic. E.g.:
 # from pydantic import BaseModel, Field
@@ -68,8 +70,8 @@ def get_winner(values):
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--judge_type", type=str, default="preference_ternary", choices=["reward", "preference_binary", "preference_ternary", "preference_score"])
-    parser.add_argument("--input_repo", type=str, default="zjhhhh/human-annotation-1.5B")
+    parser.add_argument("--judge_type", type=str, default="preference_ternary", choices=["reward", "preference_binary", "preference_ternary", "preference_score", "preference_5score"])
+    parser.add_argument("--input_repo", type=str, default="zjhhhh/human-scored-1.5B")
     parser.add_argument("--selection_pairs", type=int, default=2, help="number of pairs to use for selecting chosen/reject responses")
     parser.add_argument("--gradient_pairs", type=int, default=0, help="number of pairs to use for gradient estimation")
     parser.add_argument("--max_tokens", type=int, default=20, help="max tokens to generate by the judge model")
@@ -120,7 +122,8 @@ def judge(
             content = []
             for j in range(n_reward_samples):
                 response = client.chat.completions.create(
-                model="qwen/qwen2.5-vl-72b-instruct",
+                # model="qwen/qwen2.5-vl-72b-instruct",
+                model="openai/gpt-5",
                 messages=prompt)
                 content.append(response.choices[0].message.content.strip())
             # Extract the actual content from the API response
@@ -135,8 +138,8 @@ def judge(
         output = []
         for j, response_list in enumerate(responses):
             if response_list is not None:
-                if judge_type.startswith("reward") or judge_type == "preference_score":
-                    # Filter responses that can be converted to numbers and calculate mean
+                if judge_type.startswith("reward") or judge_type == "preference_score" or judge_type == "preference_5score":
+                    # Filter responses that can be converted to numbers and calculate majority
                     valid_responses = []
                     for response in response_list:
                         try:
@@ -146,7 +149,10 @@ def judge(
                             continue
                     
                     if valid_responses:
-                        parsed_value = sum(valid_responses) / len(valid_responses)
+                        # Find the most common response (majority)
+                        from collections import Counter
+                        counts = Counter(valid_responses)
+                        parsed_value = counts.most_common(1)[0][0]
                         output.append(parsed_value)
                     else:
                         print(f"Warning: No valid numeric responses for prompt {j+1}")
@@ -248,13 +254,16 @@ def main():
     elif args.judge_type == "preference_score":
         filename = "prompt_preference_score.txt"
         guided_decoding = PREFERENCE_SCORE_GUIDED_DECODING
+    elif args.judge_type == "preference_5score":
+        filename = "prompt_preference_5score.txt"
+        guided_decoding = PREFERENCE_5SCORE_GUIDED_DECODING
     with open(Path(__file__).parent / filename, "r") as f:
         prompt_template = f.read()
 
     # dataset
     # dataset = load_dataset(args.input_repo, split='train', download_mode="force_redownload")
     dataset = load_dataset(args.input_repo, split='train')
-    dataset = dataset.select(range(50))
+    dataset = dataset.select(range(10))
     
     # Split requirements and create new rows
     expanded_data = []
@@ -286,7 +295,8 @@ def main():
 
     client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
-            api_key="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",
+            # api_key="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",
+            api_key="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",
         )
 
     # load model
@@ -305,7 +315,7 @@ def main():
         args.top_p,
     )
     
-    dataset.push_to_hub(args.input_repo + f'_judge_{args.judge_type}_2')
+    dataset.push_to_hub(args.input_repo + f'_judge_{args.judge_type}'+'gpt-5')
     print(f'time taken: {time.time() - st}')
 
 
