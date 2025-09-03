@@ -1,0 +1,48 @@
+{
+  "citation": "",
+  "description": "",
+  "features": {
+    "prompt": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "response_Llama-3.2-3B-Instruct": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "reward_helpfulness_Llama-3.2-3B-Instruct": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "reward_correctness_Llama-3.2-3B-Instruct": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "response_Two_Header_REBEL_1e4": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "reward_helpfulness_Two_Header_REBEL_1e4": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "reward_correctness_Two_Header_REBEL_1e4": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "response_Multi_Preference_REBEL_1e4": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "reward_helpfulness_Multi_Preference_REBEL_1e4": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "reward_correctness_Multi_Preference_REBEL_1e4": {
+      "dtype": "float64",
+      "_type": "Value"
+    }
+  },
+  "homepage": "",
+  "license": ""
+}

@@ -1,0 +1,26 @@
+Pairwise Model Comparison Tables
+==================================================
+
+Table 1: Helpfulness Comparison
+1[r_1(x,y) > r_1(x,y')]
+Rows: Row model (y), Columns: Column model (y')
+
+Base       0.500   0.437   0.327
+REBEL      0.563   0.500   0.369
+Ours       0.673   0.630   0.500
+
+Table 2: Correctness Comparison
+1[r_2(x,y) > r_2(x,y')]
+Rows: Row model (y), Columns: Column model (y')
+
+Base       0.500   0.444   0.345
+REBEL      0.556   0.500   0.387
+Ours       0.655   0.613   0.500
+
+Table 3: Min(Helpfulness, Correctness)
+min_i 1[r_i(x,y) > r_i(x,y')]
+Rows: Row model (y), Columns: Column model (y')
+
+Base       0.500   0.395   0.291
+REBEL      0.514   0.500   0.329
+Ours       0.619   0.572   0.500

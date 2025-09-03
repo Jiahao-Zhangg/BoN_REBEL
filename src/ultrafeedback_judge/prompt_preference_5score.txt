@@ -36,7 +36,7 @@ You should select 2 because both responses fail to contain factual details.
 (1)“Mushrooms - they are rich in the glutamates that lead to incredible umami flavors and they don’t look cute in the slightest while alive.”
 (2)“Mushrooms, because they can be easily caramelized and browned, they are rich in the glutamates which lead to incredible umami flavors, they naturally are completely free of soy and gluten, and they don’t look cute as babies.”
 You should select 1 because both responses are acceptable but response(1) has less details than response(2).
-Another 3-point example:
+Another 1-point example:
 (1)“Mushrooms are tasty.”
 (2)“Mushrooms, because they can be cooked easily and are gluten-free”
 You should select 1 even if both responses don’t effectively fulfill the instruction but response(1) has no factual details at all and response(2)at least includes one point “gluten-free”.
