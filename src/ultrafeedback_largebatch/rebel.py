@@ -28,8 +28,9 @@ from typing import Literal, Optional
 @dataclass
 class REBELHParams:
     num_updates: tyro.conf.Suppress[int] = 1000
-    eta: float = 1e6 * 2
-    bon: bool = True
+    eta: float = 1e6
+    bon: bool = False
+    winrate: bool = False
     """If True, use current method. If False, use original REBEL with reward gap."""
 
 
@@ -45,6 +46,8 @@ class TaskHParams:
 @dataclass
 class Args:
     # common args
+    test: bool = False
+    """if test is true, the dataset will be reduced to 100 samples"""
     exp_name: str = "ultrafeedback_rebel"
     """the name of this experiment"""
     seed: int = 555134
@@ -229,6 +232,8 @@ def evaluate(args, policy, tokenizer, dataloader):
 
             if args.rebel.bon:
                 reg_diff = ratio_logprob - args.rebel.eta * (data["g_chosen"] - data["g_reject"])
+            elif args.rebel.winrate:
+                reg_diff = ratio_logprob - args.rebel.eta * 1
             else:
                 chosen_reward = data["chosen_reward"]
                 reject_reward = data["reject_reward"]
@@ -315,6 +320,8 @@ if __name__ == '__main__':
     try:
         dataset = load_dataset(args.task.input_repo + '_logprob', split='train')
         dataset = dataset.with_format("torch", columns=logprob_columns)
+        if args.test:
+            dataset = dataset.select(range(100))
         temp_dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True)
         validation_dataset = load_dataset(args.task.input_repo + '_logprob', split='test')
         validation_dataset = validation_dataset.with_format("torch", columns=logprob_columns)
@@ -456,6 +463,8 @@ if __name__ == '__main__':
                 
                 if args.rebel.bon:
                     reg_diff = ratio_logprob - args.rebel.eta * (mb_g_chosen - mb_g_reject)
+                elif args.rebel.winrate:
+                    reg_diff = ratio_logprob - args.rebel.eta * 1
                 else:
                     reward_diff = mb_chosen_reward - mb_reject_reward
                     reg_diff = ratio_logprob - args.rebel.eta * reward_diff

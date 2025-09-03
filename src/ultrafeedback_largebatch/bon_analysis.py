@@ -30,7 +30,9 @@ class Args:
         "meta-llama/Llama-3.2-3B-Instruct",
         # "/work2/lujingz/model3b",
         # "/work2/lujingz/model3b_bon_rerun",
-        "/work2/lujingz/model_3b_multi",
+        "zjhhhh/REBEL_1e4_ver2",
+        "zjhhhh/Multi_Preference_REBEL_1e4",
+        "zjhhhh/BoN_REBEL_1e4",
     ])
     """the model to evaluate"""
     input_dataset: str = "zjhhhh/Whole-Data-Llama-3.2-3B-Instruct-20_armo_tokenized_Llama-3.2-3B-Instruct_slice30"
@@ -39,11 +41,11 @@ class Args:
     """the split of the dataset"""
     end_idx: int = -1
     """the end index of the dataset"""
-    n: int = 5
+    n: int = 3
     """best-of-n"""
     reward_models: List[str] = field(default_factory=lambda: [
         "RLHFlow/ArmoRM-Llama3-8B-v0.1",
-        "sfairXC/FsfairX-LLaMA3-RM-v0.1",
+        # "sfairXC/FsfairX-LLaMA3-RM-v0.1",
     ])
     """reward models to evaluate responses on"""
     maxlen: int = 1024
