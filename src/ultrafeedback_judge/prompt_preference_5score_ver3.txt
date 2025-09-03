@@ -1,0 +1,81 @@
+Based on the provided input instruction and two responses and the requirement question from a worker, assess two responses based on the following criteria: Does each of the two responses meet the requirement? Meeting the requirement means that the answer to the requirement question should be yes.
+
+Accordingly, assign a score (in {{0,1,2,3,4}}) to indicate the preference for the first response over the second assessing how well the first response addresses the requirement compared to the second response. When giving a score, focus **only** on the posed requirement question and ignore other aspects of response quality not implied by the question. 
+
+
+For example, the input instruction might be "Write a polite email to all international experts on campus inviting them to attend the graduation ceremony. In your email you should include time, place and other relevant information about the ceremony. Do not use your own name at the end of the email. Use “Li Ming” instead." Your selection should be based on the two responses and the requirement, using the following rating scale:
+
+- 4: Select 4 if the first response clearly and strongly **outperforms** the second response in addressing the requirement.
+- 3: Select 3 if the first response is somewhat **better** than the second response in addressing the requirement. Note that both responses may or may not effectively address the requirement, you should select 3 as long as the first response is better but not overwhelmingly better than the second response.
+- 2: The two responses are about **equally** good or bad in addressing the requirement with no major difference in quality.
+- 1: Select 1 if the first response is somewhat **worse** than the second response in addressing the requirement. Note that both responses may or may not effectively address the requirement, you should select 1 as long as the first response is worse but not overwhelmingly worse than the second response. 
+- 0: Select 0 if the first response is clearly and strongly **worse** than the second response in addressing the requirement.
+
+Example 1 Consider two responses:
+(1)“Dear International Experts, You are warmly invited to our Graduation Ceremony on June 20, 10:00 a.m., University Auditorium. A reception follows. Interpretation provided. Please bring campus ID. RSVP by June 10 to events@university.edu. We would be honored by your presence. Parking available at Lot C. Thank you very much. Best regards,Li Ming”
+(2)“Dear International Experts, Please join our Graduation Ceremony on June 20 at 10:00 a.m. in the University Auditorium. Reception to follow. Interpretation available. Bring campus ID. Parking in Lot C. Kindly RSVP by June 10 to events@university.edu. Sincerely,Ma Ming”
+When the requirement is “Does the email end with "Li Ming" as the sender?” 
+You should select **4** because response(1) has the correct sender Li Ming but response(2) has a completely wrong sender Ma Ming. So response(1) is clearly better than response(2) in addressing the requirement.
+When the requirement is “Does the response satisfy the following two criteria: 1) The response directly address the request without excessive or off-topic information not necessary for addressing the user's instruction? 2) The response should match the context and the instruction, whether it requires professionalism, friendliness, formality, or neutrality.”
+You should select **3** because both response(1) and response(2) meet the request of writing emails but the response(1) is somewhat better because it has the correct sender Li Ming.
+When the requirement is “Is the email polite”?
+You should select **3** because response(1) uses many words ‘Dear’, ‘warmly invited’, ‘Please’ and says thanks in the ending. Response(2) also uses basic polite words ‘Dear’ and ‘Please’. So response(1) is somewhat more polite than response(2). 
+
+
+Example 2
+(1)“Dear International Experts, You are warmly invited to our Graduation Ceremony on June 20, 10:00 a.m., University Auditorium. A reception follows. Interpretation provided. Please bring campus ID. RSVP by June 10 to events@university.edu. We would be honored by your presence. Parking available at Lot C. Thank you very much. Best regards,Li Ming”
+(2)“Dear International Experts, Please join our Graduation Ceremony on June 20 at 10:00 a.m. in the University Auditorium. Reception to follow. Interpretation available. Bring campus ID. Parking in Lot C. Kindly RSVP by June 10 to events@university.edu. Sincerely,Li Ming”
+When the requirement is “Does the email end with "Li Ming" as the sender?” 
+You should select **2** because both response(1) and response(2) have the correct sender Li Ming. So they are equally good in addressing the correctness of the sender.
+
+Example 3
+(1)“Dear International Experts, You are warmly invited to our Graduation Ceremony on June 20, 10:00 a.m., University Auditorium. A reception follows. Interpretation provided. Please bring campus ID. RSVP by June 10 to events@university.edu. We would be honored by your presence. Parking available at Lot C. Thank you very much. Best regards, Ma Ming”
+(2)“Dear International Experts, Please join our Graduation Ceremony on June 20 at 10:00 a.m. in the University Auditorium. Reception to follow. Interpretation available. Bring campus ID. Parking in Lot C. Kindly RSVP by June 10 to events@university.edu. Sincerely, Zhang Ming”
+When the requirement is “Does the email end with "Li Ming" as the sender?” 
+You should select **2** because both response(1) and response(2) have the incorrect sender, one is Ma Ming and the other is Zhang Ming. So they are equally bad in addressing the correctness of the sender.
+
+Example 4.
+(1)”Dear International Experts, You are cordially invited to our Graduation Ceremony on June 20 at 10:00 a.m. in the University Auditorium. A reception will follow. Interpretation services available. Please bring campus ID. Parking in Lot C. Kindly RSVP by June 10 to events@university.edu. We would be honored by your presence. Sincerely, Li Ming”
+(2)“Dear International Experts, You are warmly invited to our Graduation Ceremony on June 20, 10:00 a.m., University Auditorium. A reception follows. Interpretation provided. Please bring campus ID. RSVP by June 10 to events@university.edu. We would be honored by your presence. Parking available at Lot C. Thank you very much. Best regards, Li Ming”
+
+When the requirement is “Does the response satisfy the following two criteria: 1) The response directly address the request without excessive or off-topic information not necessary for addressing the user's instruction? 2) The response should match the context and the instruction, whether it requires professionalism, friendliness, formality, or neutrality.”
+You should select **2** because both response(1) and response(2) meet the request of writing emails with right content and are similarly polite.
+
+Example 5
+(1) “To all campus experts: The graduation ceremony is June 20, 10:00 a.m., University Auditorium. Show up on time; we’re not waiting. Parking is Lot C. Bring campus ID. RSVP by June 10 to events@university.edu. Skip the drama and just attend. Thanks. You are professionals; act like it. Seriously. Li Ming”
+(2)“Dear International Experts, Please join our Graduation Ceremony on June 20 at 10:00 a.m. in the University Auditorium. Reception to follow. Interpretation available. Bring campus ID. Parking in Lot C. Kindly RSVP by June 10 to events@university.edu. Sincerely, Ma Ming”
+
+When the requirement is “Is the email polite”?
+You should select **1** because response(1) is impolite (‘we’re not waiting’). Response(2) uses basic polite words ‘Dear’ and ‘Please’. So response(1) is somewhat less impolite than response(2). Here we ignore that response(2) has the wrong sender because we only focus on the requirement “Is the email polite”.
+
+Example 6.
+(1)”To all campus experts: The graduation ceremony is June 20, 10:00 a.m., University Auditorium. Show up on time; we’re not waiting. Parking is Lot C. Bring campus ID. RSVP by June 10 to events@university.edu. Skip the drama and just attend. Thanks. You are professionals; act like it. Seriously. Li Ming”
+(2)”Dear International Experts, You are warmly invited to our Graduation Ceremony on June 20, 10:00 a.m., University Auditorium. A reception follows. Interpretation provided. Please bring campus ID. RSVP by June 10 to events@university.edu. We would be honored by your presence. Parking available at Lot C. Thank you very much. Best regards,Li Ming”
+When the requirement is “Is the email polite”?
+You should select **0** because response(1) is impolite (‘we’re not waiting’). Response(2) uses many words ‘Dear’, ‘warmly invited’, ‘Please’ and says thanks in the ending. So response(1) is clearly less impolite than response(2). 
+
+Example 7.
+(1)“I can’t help with that.”
+(2) “Dear International Experts, You are warmly invited to our Graduation Ceremony on June 20, 10:00 a.m., University Auditorium. A reception follows. Interpretation provided. Please bring campus ID. RSVP by June 10 to events@university.edu. We would be honored by your presence. Parking available at Lot C. Thank you very much. Best regards,Li Ming”
+When the requirement is “Does the response satisfy the following two criteria: 1) The response directly address the request without excessive or off-topic information not necessary for addressing the user's instruction? 2) The response should match the context and the instruction, whether it requires professionalism, friendliness, formality, or neutrality.”
+You should select **0** because response(1) clearly doesn’t meet the request of writing an email but response(2) clearly writes a polite email with the right content.
+
+Important Reminder: 
+(1) The score must always reflect your preference for the first response over the second. This is a **relative** judgment — do not evaluate each response in isolation. Even if both responses are good (or both are bad), you must choose a score based on comparison.
+(2) Your score can be any number in {{0,1,2,3,4}}. If you are totally confused, return -1 as a default. You should use your judgment to determine the most appropriate score. **Focus on the posed requirement question and ignore other aspects of response quality not implied by the question**. 
+(3) You should think step by step according to the above rules and examples. But Must return only a number - do not include any other text in your response. RETURN ONLY A NUMBER!
+
+Input:
+{prompt}
+
+Generated Text:
+{response_a}
+
+Generated Text:
+{response_b}
+
+Requirement Question:
+{check}
+
+Preference: 
+

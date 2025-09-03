@@ -29,7 +29,7 @@ from typing import Literal, Optional
 class REBELHParams:
     num_updates: tyro.conf.Suppress[int] = 1000
     eta: float = 1e4
-    bon: bool = True
+    bon: bool = False
     """If True, use current method. If False, use original REBEL with reward gap."""
 
 

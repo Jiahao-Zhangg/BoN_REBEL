@@ -13,7 +13,7 @@ torch.set_printoptions(threshold=10_000)
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
+    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-3B-Instruct")
     parser.add_argument("--input_repo", type=str, required=True, help="output repo from rank.py")
     parser.add_argument("--maxlen", type=int, default=2048)
     parser.add_argument("--maxlen_prompt", type=int, default=1024)
@@ -21,7 +21,7 @@ def parse_arguments():
     parser.add_argument("--num_reward_models", type=int, default=2, help="number of reward models")
     parser.add_argument("--M", type=int, default=8, help="number of responses for y' and y_k each")
     parser.add_argument("--beta", type=float, default=1.0, help="beta parameter for BTL model")
-    parser.add_argument("--slicing_idx", type=int, default=5)
+    parser.add_argument("--slicing_idx", type=int, default=30)
     return parser.parse_args()
 
 
@@ -118,8 +118,8 @@ def main():
         
         for j in range(args.num_reward_models):
             # Get all rewards for this reward model
-            y_prime_rewards = np.array([row[f"response_{i}_reward_{j}"] for i in y_prime_indices])  # shape: (8,)
-            y_k_rewards = np.array([row[f"response_{k}_reward_{j}"] for k in y_k_indices])  # shape: (8,)
+            y_prime_rewards = np.array([row[f"reward_{j}_response_{i}"] for i in y_prime_indices])  # shape: (8,)
+            y_k_rewards = np.array([row[f"reward_{j}_response_{k}"] for k in y_k_indices])  # shape: (8,)
             
             # Compute all P_j(x, y_k, y'_i) at once
             # y_k_rewards[:, None] broadcasts to (8, 1), y_prime_rewards broadcasts to (8,)
@@ -146,7 +146,7 @@ def main():
         j_star_list.append(j_star)
         
         # Step 2: Use argmax/argmin of rewards for z responses selection, but still compute g(x,z) for storage
-        z_rewards = np.array([row[f"response_{z_idx}_reward_{j_star}"] for z_idx in z_indices])
+        z_rewards = np.array([row[f"reward_{j_star}_response_{z_idx}"] for z_idx in z_indices])
         
         # Find chosen (argmax reward) and rejected (argmin reward)
         chosen_idx_in_z = np.argmax(z_rewards)
@@ -164,7 +164,7 @@ def main():
         g_values = []
         for z_idx in z_indices:
             # Compute B_j*(x,z) using vectorized operations and cached values
-            z_reward = row[f"response_{z_idx}_reward_{j_star}"]
+            z_reward = row[f"reward_{j_star}_response_{z_idx}"]
             exp_z = np.exp(z_reward)
             p_z_y_prime = exp_z / (exp_z + exp_y_prime_j_star)  # shape: (8,)
             B_j_star = np.sum(p_z_y_prime * exp_terms)
@@ -186,7 +186,7 @@ def main():
         )[args.slicing_idx:]
         llama_chosen_tokens.append(llama_chosen_token)
         llama_chosen.append(tokenizer.decode(llama_chosen_token, skip_special_tokens=False))
-        _chosen_reward = row[f"response_{chosen_idx}_reward_{j_star}"]
+        _chosen_reward = row[f"reward_{j_star}_response_{chosen_idx}"]
         chosen_reward.append(_chosen_reward)
         assert len(llama_chosen_token) == args.maxlen
         assert llama_chosen_token[-1] == 128009 or llama_chosen_token[-1] == 128256
@@ -201,7 +201,7 @@ def main():
         )[args.slicing_idx:]
         llama_reject_tokens.append(llama_reject_token)
         llama_reject.append(tokenizer.decode(llama_reject_token, skip_special_tokens=False))
-        _reject_reward = row[f"response_{reject_idx}_reward_{j_star}"]
+        _reject_reward = row[f"reward_{j_star}_response_{reject_idx}"]
         reject_reward.append(_reject_reward)
         assert len(llama_reject_token) == args.maxlen
         assert llama_reject_token[-1] == 128009 or llama_reject_token[-1] == 128256
@@ -228,7 +228,7 @@ def main():
 
     dataset = dataset.train_test_split(test_size=1000, shuffle=True)
     model_name = args.model.split('/')[-1]
-    dataset.push_to_hub(args.input_repo + '_tokenized_' + model_name + '_slicing_' + str(args.slicing_idx)+'_multi_preference')
+    dataset.push_to_hub(args.input_repo + '_tokenized_multi_preference')
 
 
 if __name__ == "__main__":

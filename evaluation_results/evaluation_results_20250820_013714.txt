@@ -1,0 +1,19 @@
+Model Evaluation Results
+==================================================
+
+Model: meta-llama/Llama-3.2-3B-Instruct
+  Helpfulness: 0.7861
+  Correctness: 0.7843
+
+Model: zjhhhh/REBEL_1e4_ver2
+  Helpfulness: 0.7906
+  Correctness: 0.7870
+
+Model: zjhhhh/Multi_Preference_REBEL_1e4
+  Helpfulness: 0.8153
+  Correctness: 0.8103
+
+Model: zjhhhh/BoN_REBEL_1e4
+  Helpfulness: 0.7958
+  Correctness: 0.7933
+

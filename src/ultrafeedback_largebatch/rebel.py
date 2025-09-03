@@ -28,9 +28,9 @@ from typing import Literal, Optional
 @dataclass
 class REBELHParams:
     num_updates: tyro.conf.Suppress[int] = 1000
-    eta: float = 1e6
-    bon: bool = False
     winrate: bool = False
+    eta: float = 1e4
+    bon: bool = True
     """If True, use current method. If False, use original REBEL with reward gap."""
 
 

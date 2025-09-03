@@ -1,0 +1,41 @@
+name: new_vllm
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - pip:
+      # Core ML libraries
+      - torch>=2.4.0
+      - transformers>=4.46.0
+      - tokenizers>=0.20.0
+      - datasets>=2.19.0
+      - huggingface-hub>=0.24.0
+      
+      # Stable modern vLLM (0.9.x series)
+      - vllm>=0.9.0,<0.10.0
+      
+      # Additional dependencies for your scripts
+      - tqdm
+      - accelerate>=0.29.0
+      - safetensors>=0.4.0
+      - peft>=0.6.0
+      
+      # For API and serving
+      - fastapi
+      - uvicorn
+      - requests
+      
+      # Data handling
+      - pandas
+      - pyarrow
+      - jsonlines
+      - pyyaml
+      
+      # Optional but useful
+      - matplotlib
+      - seaborn
+      - jupyter
+      - ipykernel
