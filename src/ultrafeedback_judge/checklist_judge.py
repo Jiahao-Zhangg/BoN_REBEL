@@ -64,6 +64,88 @@ def get_winner(values):
     return winners[0]
 
 
+def is_valid_response(response, judge_type):
+    """
+    Check if a response is valid for the given judge type.
+    
+    Args:
+        response: The response to validate (string)
+        judge_type: The type of judge to determine valid responses
+        
+    Returns:
+        bool: True if response is valid, False otherwise
+    """
+    if judge_type == "reward":
+        try:
+            score = int(response)
+            return 0 <= score <= 100
+        except:
+            return False
+    elif judge_type == "preference_binary":
+        return response in ["A", "B"]
+    elif judge_type == "preference_ternary":
+        return response in ["A", "B", "Tie"]
+    elif judge_type == "preference_score":
+        try:
+            score = int(response)
+            return 0 <= score <= 10
+        except:
+            return False
+    elif judge_type == "preference_5score":
+        try:
+            score = int(response)
+            return -1 <= score <= 4
+        except:
+            return False
+    else:
+        # For unknown types, assume valid to avoid breaking
+        return True
+
+
+def filter_valid_responses(responses, judge_type):
+    """
+    Filter out invalid responses based on judge type.
+    
+    Args:
+        responses: List of response strings
+        judge_type: The type of judge to determine valid responses
+        
+    Returns:
+        List of valid responses only
+    """
+    return [r for r in responses if is_valid_response(r, judge_type)]
+
+
+def reverse_score(score, judge_type):
+    """
+    Reverse the score to handle positional bias when switching response positions.
+    
+    Args:
+        score: The original score (can be string or numeric)
+        judge_type: The type of judge to determine how to reverse the score
+        
+    Returns:
+        Reversed score of the same type as input
+    """
+    if judge_type == "preference_5score":
+        # For 5score (-1 to 4), reverse using 4-x (but keep -1 as -1)
+        if score == -1:
+            return -1
+        else:
+            return 4 - int(score)
+    elif judge_type in ["preference_binary", "preference_ternary"]:
+        # For categorical preferences, swap A and B, keep Tie
+        if score == "A":
+            return "B"
+        elif score == "B":
+            return "A"
+        else:  # "Tie"
+            return "Tie"
+    else:
+        # For other preference types, return as is
+        return score
+
+
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
@@ -78,6 +160,7 @@ def parse_arguments():
     parser.add_argument("--n_reward_samples", type=int, default=5)
     parser.add_argument("--temperature", type=float, default=1.3)
     parser.add_argument("--top_p", type=float, default=0.9)
+    parser.add_argument("--switch_position", action="store_true", default=False, help="collect preferences in both directions to handle positional bias")
 
     return parser.parse_args()
 
@@ -88,13 +171,13 @@ def get_message(instruction):
 
 def judge(
     llm, tokenizer, judge_type, prompt_template, guided_decoding, dataset, total_pairs, 
-    max_tokens, world_size, n_reward_samples, temperature, top_p
+    max_tokens, world_size, n_reward_samples, temperature, top_p, switch_position
 ):
-    for i in range(0, total_pairs, 1 if judge_type.startswith("reward") else 2):
-        print(f'gathering reward for {i+1}th response')
+    if judge_type.startswith("reward"):
+        # Process each response individually for reward
+        for i in range(total_pairs):
+            print(f'gathering reward for {i+1}th response')
 
-        # prompts for judge
-        if judge_type.startswith("reward"):
             prompts = [
                 get_message(
                     prompt_template.format(
@@ -104,49 +187,146 @@ def judge(
                     )
                 ) for row in tqdm(dataset)
             ]
-        elif judge_type.startswith("preference"):
-            prompts = [
-                get_message(
-                    prompt_template.format(
-                        prompt=row['prompt'], 
-                        response_a=row[f'response_{i}'][1]["content"], 
-                        response_b=row[f'response_{i+1}'][1]["content"], 
-                        check=row['check']
-                    )
-                ) for row in tqdm(dataset)
-            ]
-        prompts = [tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True) for prompt in prompts]
+            prompts = [tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True) for prompt in prompts]
 
-        # start generate
-        set_seed(0)
-        sampling_params = SamplingParams(
-            temperature=temperature,
-            top_p=top_p,
-            n=n_reward_samples,
-            max_tokens=max_tokens,
-            seed=0,
-            guided_decoding=guided_decoding,
-        )
-        response = llm.generate(prompts, sampling_params)
+            # start generate
+            set_seed(0)
+            sampling_params = SamplingParams(
+                temperature=temperature,
+                top_p=top_p,
+                n=n_reward_samples,
+                max_tokens=max_tokens,
+                seed=0,
+                guided_decoding=guided_decoding,
+            )
+            response = llm.generate(prompts, sampling_params)
 
-        # add to dataset
-        output = list(map(lambda x: [r.text for r in x.outputs], response))    # Get responses
-        output = list(map(lambda x: [r for r in x if r is not None], output))  # Filter out None's
+            # add to dataset
+            output = list(map(lambda x: [r.text for r in x.outputs], response))    # Get responses
+            output = list(map(lambda x: [r for r in x if r is not None], output))  # Filter out None's
+            output = list(map(lambda x: filter_valid_responses(x, judge_type), output))  # Filter invalid responses
 
-        if judge_type.startswith("reward") or judge_type == "preference_score":
-            output = list(map(lambda x: [int(r) for r in x], output))
-            output = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output))  # Average the rewards or scored preferences
-        elif judge_type.startswith("preference"):
-            output = list(map(lambda x: get_winner(x), output))  # Pick most common answer
+            if judge_type == "preference_score":
+                output = list(map(lambda x: [int(r) for r in x], output))
+                output = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output))  # Average the scored preferences
+            else:
+                output = list(map(lambda x: [int(r) for r in x], output))
+                output = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output))  # Average the rewards
 
-        if judge_type.startswith("reward"):
             dataset = dataset.add_column(f"response_{i}_judged_reward", output)
             # filter out invalid judgements (None's)
             dataset = dataset.filter(lambda row: row[f"response_{i}_judged_reward"] is not None)
-        elif judge_type.startswith("preference"):
-            dataset = dataset.add_column(f"response_{i}_{i+1}_judged_preference", output)
-            # filter out invalid judgements (None's)
-            dataset = dataset.filter(lambda row: row[f"response_{i}_{i+1}_judged_preference"] is not None)
+
+    elif judge_type.startswith("preference"):
+        # Process all pairs for preference comparison
+        for i in range(total_pairs):
+            for j in range(i + 1, total_pairs):
+                # Collect preferences in original direction (i vs j)
+                print(f'gathering preference for response {i+1} vs {j+1}')
+                
+                prompts = [
+                    get_message(
+                        prompt_template.format(
+                            prompt=row['prompt'], 
+                            response_a=row[f'response_{i}'][1]["content"], 
+                            response_b=row[f'response_{j}'][1]["content"], 
+                            check=row['check']
+                        )
+                    ) for row in tqdm(dataset)
+                ]
+                prompts = [tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True) for prompt in prompts]
+
+                # start generate
+                set_seed(0)
+                sampling_params = SamplingParams(
+                    temperature=temperature,
+                    top_p=top_p,
+                    n=n_reward_samples,
+                    max_tokens=max_tokens,
+                    seed=0,
+                    guided_decoding=guided_decoding,
+                )
+                response = llm.generate(prompts, sampling_params)
+
+                # add to dataset
+                output = list(map(lambda x: [r.text for r in x.outputs], response))    # Get responses
+                output = list(map(lambda x: [r for r in x if r is not None], output))  # Filter out None's
+                output = list(map(lambda x: filter_valid_responses(x, judge_type), output))  # Filter invalid responses
+
+                if judge_type == "preference_score":
+                    output = list(map(lambda x: [int(r) for r in x], output))
+                    output = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output))  # Average the scored preferences
+                else:
+                    output = list(map(lambda x: get_winner(x) if len(x) > 0 else None, output))  # Pick most common answer
+
+                # If switch_position is enabled, also collect preferences in reversed direction
+                if switch_position:
+                    print(f'gathering preference for response {j+1} vs {i+1} (switched)')
+                    
+                    prompts_switched = [
+                        get_message(
+                            prompt_template.format(
+                                prompt=row['prompt'], 
+                                response_a=row[f'response_{j}'][1]["content"], 
+                                response_b=row[f'response_{i}'][1]["content"], 
+                                check=row['check']
+                            )
+                        ) for row in tqdm(dataset)
+                    ]
+                    prompts_switched = [tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True) for prompt in prompts_switched]
+
+                    # Generate switched responses
+                    response_switched = llm.generate(prompts_switched, sampling_params)
+                    
+                    # Process switched responses
+                    output_switched = list(map(lambda x: [r.text for r in x.outputs], response_switched))
+                    output_switched = list(map(lambda x: [r for r in x if r is not None], output_switched))
+                    output_switched = list(map(lambda x: filter_valid_responses(x, judge_type), output_switched))
+
+                    if judge_type == "preference_score":
+                        output_switched = list(map(lambda x: [int(r) for r in x], output_switched))
+                        output_switched = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output_switched))
+                    else:
+                        output_switched = list(map(lambda x: get_winner(x) if len(x) > 0 else None, output_switched))
+
+                    # Reverse the switched scores and combine with original
+                    output_switched_reversed = [reverse_score(score, judge_type) if score is not None else None for score in output_switched]
+                    
+                    # Combine original and reversed scores (double the samples)
+                    if judge_type == "preference_score":
+                        # For numeric scores, average the original and reversed scores
+                        combined_output = []
+                        for orig, rev in zip(output, output_switched_reversed):
+                            if orig is not None and rev is not None:
+                                combined_output.append((orig + rev) / 2)
+                            elif orig is not None:
+                                combined_output.append(orig)
+                            elif rev is not None:
+                                combined_output.append(rev)
+                            else:
+                                combined_output.append(None)
+                        output = combined_output
+                    else:
+                        # For categorical scores, extend the list to include both samples
+                        # This effectively doubles the sample size for get_winner calculation
+                        extended_samples = []
+                        for orig_samples, switched_samples in zip(
+                            list(map(lambda x: [r.text for r in x.outputs], response)),
+                            list(map(lambda x: [r.text for r in x.outputs], response_switched))
+                        ):
+                            # Filter and reverse each switched sample and combine with original
+                            orig_filtered = filter_valid_responses([s for s in orig_samples if s is not None], judge_type)
+                            switched_filtered = filter_valid_responses([s for s in switched_samples if s is not None], judge_type)
+                            reversed_switched = [reverse_score(sample, judge_type) for sample in switched_filtered]
+                            combined_samples = orig_filtered + reversed_switched
+                            extended_samples.append(combined_samples)
+                        
+                        # Recompute winner with doubled samples
+                        output = list(map(lambda x: get_winner(x) if len(x) > 0 else None, extended_samples))
+
+                dataset = dataset.add_column(f"response_{i}_{j}_judged_preference", output)
+                # filter out invalid judgements (None's)
+                dataset = dataset.filter(lambda row: row[f"response_{i}_{j}_judged_preference"] is not None)
 
     # Merge dataset by 'prompt': combine response reward columns into lists
     if judge_type.startswith("reward"):
@@ -182,17 +362,19 @@ def judge(
             if prompt not in merged_data:
                 # Initialize with the first occurrence, keeping all non-response columns
                 merged_data[prompt] = {k: v for k, v in row.items() if not k.startswith('response_') or not '_judged_preference' in k}
-                # Initialize preference lists
-                for i in range(0, total_pairs, 2):
-                    if f'response_{i}_{i+1}_judged_preference' in row:
-                        merged_data[prompt][f'response_{i}_{i+1}_judged_preference'] = []
+                # Initialize preference lists for all pairs
+                for i in range(total_pairs):
+                    for j in range(i + 1, total_pairs):
+                        if f'response_{i}_{j}_judged_preference' in row:
+                            merged_data[prompt][f'response_{i}_{j}_judged_preference'] = []
             
             # Append judged preferences to the corresponding lists
-            for i in range(0, total_pairs, 2):
-                if f'response_{i}_{i+1}_judged_preference' in row and row[f'response_{i}_{i+1}_judged_preference'] is not None:
-                    if f'response_{i}_{i+1}_judged_preference' not in merged_data[prompt]:
-                        merged_data[prompt][f'response_{i}_{i+1}_judged_preference'] = []
-                    merged_data[prompt][f'response_{i}_{i+1}_judged_preference'].append(row[f'response_{i}_{i+1}_judged_preference'])
+            for i in range(total_pairs):
+                for j in range(i + 1, total_pairs):
+                    if f'response_{i}_{j}_judged_preference' in row and row[f'response_{i}_{j}_judged_preference'] is not None:
+                        if f'response_{i}_{j}_judged_preference' not in merged_data[prompt]:
+                            merged_data[prompt][f'response_{i}_{j}_judged_preference'] = []
+                        merged_data[prompt][f'response_{i}_{j}_judged_preference'].append(row[f'response_{i}_{j}_judged_preference'])
         
         # Convert back to dataset
         dataset = Dataset.from_list(list(merged_data.values()))
@@ -274,6 +456,7 @@ def main():
         args.n_reward_samples,
         args.temperature,
         args.top_p,
+        args.switch_position,
     )
 
     dataset.push_to_hub(args.input_repo + f'_judge_{args.judge_type}')
