@@ -14,8 +14,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+MAP = {'A': 4, 'B': 0, 'Tie': 2, -1: -1, 0: 0, 1: 1, 2: 2, 3: 3, 4: 4}
+MAP_TERNARY = {0:0, 1:0, 2:2, 3:4, 4:4}
 
-def read_human_annotations(file_path):
+def read_human_annotations(file_path, ternary=False):
     """Read human annotation arrays from the text file."""
     annotations = []
     
@@ -29,6 +31,8 @@ def read_human_annotations(file_path):
             try:
                 # Parse the array from string
                 array = ast.literal_eval(line)
+                if ternary:
+                    array = list(map(lambda x: MAP_TERNARY[x], array))
                 annotations.append(array)
             except (ValueError, SyntaxError) as e:
                 print(f"Warning: Could not parse line '{line}': {e}")
@@ -60,10 +64,14 @@ def load_judge_preferences(dataset_name):
         for i, row in enumerate(data):
             if 'response_0_1_judged_preference_majority' in row:
                 pref = row['response_0_1_judged_preference_majority']
+                pref = list(map(lambda x: MAP[x], pref))
+            # if 'response_0_1_judged_preference_mean' in row:
+                # pref = row['response_0_1_judged_preference_mean']
                 judge_preferences.append(pref)
                 print(f"Row {i}: {pref}")
             elif 'response_0_1_judged_preference' in row:
                 pref = row['response_0_1_judged_preference']
+                pref = list(map(lambda x: MAP[x], pref))
                 judge_preferences.append(pref)
                 print(f"Row {i}: {pref}")
             else:
@@ -291,7 +299,7 @@ def main():
                        help="Generate heatmap visualization")
     parser.add_argument("--save-plot", type=str, default="correlation_heatmap.png",
                        help="Path to save the heatmap plot (e.g., 'correlation_heatmap.png')")
-    
+    parser.add_argument("--ternary", action='store_true', help="Use ternary preference")
     args = parser.parse_args()
     
     # Ensure we have labels for all datasets
@@ -303,7 +311,7 @@ def main():
     
     # Read human annotations (X)
     print(f"\n1. Reading human annotations from: {args.human_file}")
-    x_data = read_human_annotations(args.human_file)
+    x_data = read_human_annotations(args.human_file, args.ternary)
     print(f"Loaded {len(x_data)} annotation arrays:")
     for i, arr in enumerate(x_data):
         print(f"  Array {i}: {arr}")
