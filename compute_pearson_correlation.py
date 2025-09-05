@@ -40,7 +40,7 @@ def read_human_annotations(file_path, ternary=False):
     return annotations
 
 
-def load_judge_preferences(dataset_name):
+def load_judge_preferences(dataset_name, measure='majority', use_reward=False):
     """Load judge preferences from Hugging Face dataset."""
     print(f"Loading dataset: {dataset_name}")
     
@@ -62,21 +62,44 @@ def load_judge_preferences(dataset_name):
         # Extract the judge preferences
         judge_preferences = []
         for i, row in enumerate(data):
-            if 'response_0_1_judged_preference_majority' in row:
-                pref = row['response_0_1_judged_preference_majority']
-                pref = list(map(lambda x: MAP[x], pref))
-            # if 'response_0_1_judged_preference_mean' in row:
-                # pref = row['response_0_1_judged_preference_mean']
-                judge_preferences.append(pref)
-                print(f"Row {i}: {pref}")
-            elif 'response_0_1_judged_preference' in row:
-                pref = row['response_0_1_judged_preference']
-                pref = list(map(lambda x: MAP[x], pref))
-                judge_preferences.append(pref)
-                print(f"Row {i}: {pref}")
+            if use_reward:
+                # Use reward scores: response_0 - response_1
+                if measure == 'mean' and 'response_0_mean' in row and 'response_1_mean' in row:
+                    response_0 = row['response_0_mean']
+                    response_1 = row['response_1_mean']
+                    # Compute difference: response_0 - response_1
+                    pref = [r0 - r1 for r0, r1 in zip(response_0, response_1)]
+                    judge_preferences.append(pref)
+                    print(f"Row {i} (reward mean): response_0={response_0}, response_1={response_1}, diff={pref}")
+                elif measure == 'majority' and 'response_0_majority' in row and 'response_1_majority' in row:
+                    response_0 = row['response_0_majority']
+                    response_1 = row['response_1_majority']
+                    # Compute difference: response_0 - response_1
+                    pref = [r0 - r1 for r0, r1 in zip(response_0, response_1)]
+                    judge_preferences.append(pref)
+                    print(f"Row {i} (reward majority): response_0={response_0}, response_1={response_1}, diff={pref}")
+                else:
+                    print(f"Warning: Row {i} missing reward columns for measure '{measure}'")
+                    print(f"Available columns: {list(row.keys())}")
             else:
-                print(f"Warning: Row {i} missing 'response_0_1_judged_preference' column")
-                print(f"Available columns: {list(row.keys())}")
+                # Use preference judgments (original logic)
+                if measure == 'majority' and 'response_0_1_judged_preference_majority' in row:
+                    pref = row['response_0_1_judged_preference_majority']
+                    pref = list(map(lambda x: MAP[x], pref))
+                    judge_preferences.append(pref)
+                elif measure == 'mean' and 'response_0_1_judged_preference_mean' in row:
+                    pref = row['response_0_1_judged_preference_mean']
+                    # pref = list(map(lambda x: MAP[x], pref))
+                    judge_preferences.append(pref)
+                    print(f"Row {i}: {pref}")
+                elif 'response_0_1_judged_preference' in row:
+                    pref = row['response_0_1_judged_preference']
+                    pref = list(map(lambda x: MAP[x], pref))
+                    judge_preferences.append(pref)
+                    print(f"Row {i}: {pref}")
+                else:
+                    print(f"Warning: Row {i} missing 'response_0_1_judged_preference' column")
+                    print(f"Available columns: {list(row.keys())}")
         
         return judge_preferences
         
@@ -293,13 +316,17 @@ def main():
     parser.add_argument("--dataset-labels", nargs='+',
                        default=["Y"],
                        help="Labels for the datasets (Y, Z, W, ...)")
-    parser.add_argument("--method", choices=['flattened', 'average', 'both'], default='both',
+    parser.add_argument("--method", choices=['flattened', 'average', 'both'], default='flattened',
                        help="Correlation method")
     parser.add_argument("--plot", action='store_true',
                        help="Generate heatmap visualization")
     parser.add_argument("--save-plot", type=str, default="correlation_heatmap.png",
                        help="Path to save the heatmap plot (e.g., 'correlation_heatmap.png')")
     parser.add_argument("--ternary", action='store_true', help="Use ternary preference")
+    parser.add_argument("--measure", choices=['majority', 'mean'], default='majority',
+                       help="Measure to use for preference")
+    parser.add_argument("--reward", action='store_true',
+                       help="Use reward scores (response_0 - response_1) instead of preference judgments")
     args = parser.parse_args()
     
     # Ensure we have labels for all datasets
@@ -323,7 +350,7 @@ def main():
     print(f"\n2. Loading {len(args.datasets)} judge preference datasets:")
     for i, dataset_name in enumerate(args.datasets):
         print(f"  Loading {args.dataset_labels[i]} from: {dataset_name}")
-        judge_data = load_judge_preferences(dataset_name)
+        judge_data = load_judge_preferences(dataset_name, args.measure, args.reward)
         
         if judge_data is None:
             print(f"Failed to load {args.dataset_labels[i]}. Skipping.")

@@ -184,6 +184,7 @@ def judge(
                     prompt_template.format(
                         prompt=row['prompt'], 
                         response=row[f'response_{i}'],
+                        check=row['check']
                     )
                 ) for row in tqdm(dataset)
             ]
@@ -523,7 +524,7 @@ def main():
         args.switch_position,
     )
     
-    dataset.push_to_hub('MisDrifter/' + f'_judge_{args.judge_type}_3pairs')
+    dataset.push_to_hub('MisDrifter/' + f'_judge_{args.judge_type}')
     print(f'time taken: {time.time() - st}')
 
 
