@@ -1,8 +1,10 @@
 import os
 from collections import Counter
 from pathlib import Path
+from typing import Literal, List, Optional
 
 from datasets import load_dataset, Dataset
+from pydantic import BaseModel, Field
 from tqdm import tqdm
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
@@ -23,6 +25,12 @@ PREFERENCE_TERNARY_GUIDED_DECODING = GuidedDecodingParams(choice=["A", "B", "Tie
 
 PREFERENCE_SCORE_GUIDED_DECODING = GuidedDecodingParams(choice=[str(i) for i in range(11)])
 
+class ExplanationOutput(BaseModel):
+    explanation: str
+    verdict: str
+
+EXPLANATION_GUIDED_DECODING = GuidedDecodingParams(json=ExplanationOutput.model_json_schema())
+
 
 ## You can also do more complex guided decoding with Pydantic. E.g.:
 # from pydantic import BaseModel, Field
@@ -31,7 +39,7 @@ PREFERENCE_SCORE_GUIDED_DECODING = GuidedDecodingParams(choice=[str(i) for i in 
 #     verdict: Literal["A", "B"]
 #     confidence: float = Field(ge=0, le=1)
 #     reasons: Optional[List[str]] = None
-# guided = GuidedDecodingParams(json_schema=JudgeOutput.model_json_schema())
+# guided = GuidedDecodingParams(json=JudgeOutput.model_json_schema())
 
 
 def set_seed(seed=5775709):
@@ -162,6 +170,9 @@ def parse_arguments():
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--switch_position", action="store_true", default=False, help="collect preferences in both directions to handle positional bias")
 
+    parser.add_argument("--explanation", action="store_true", default=False, help="generate an explanation before judgement")
+    parser.add_argument("--explanation_max_tokens", type=int, default=256, help="max tokens to generate for the explanation")
+
     return parser.parse_args()
 
 
@@ -169,9 +180,29 @@ def get_message(instruction):
     return [{"role": "user", "content": instruction}]
 
 
+def cleanup_explanation(text):
+    """Clean up incomplete JSON from explanation generation and prepare for verdict generation."""
+    import re
+    
+    # Replace different ending patterns and standardize whitespace
+    if re.search(r'"\s*,\s*"\s*$', text):
+        # Ends with `","` (with any amount of whitespace) - replace with standardized version
+        return re.sub(r'"\s*,\s*"\s*$', '", "verdict":', text)
+    elif re.search(r'"\s*,\s*$', text):
+        # Ends with `",` - replace with standardized version
+        return re.sub(r'"\s*,\s*$', '", "verdict":', text)
+    elif re.search(r'"\s*$', text):
+        # Ends with `"` (with any amount of whitespace) - replace with standardized version
+        return re.sub(r'"\s*$', '", "verdict":', text)
+    else:
+        # Fallback: add the full structure
+        return text + '", "verdict":'
+
+    
 def judge(
     llm, tokenizer, judge_type, prompt_template, guided_decoding, dataset, total_pairs, 
-    max_tokens, world_size, n_reward_samples, temperature, top_p, switch_position
+    max_tokens, world_size, n_reward_samples, temperature, top_p, switch_position,
+    explanation, explanation_max_tokens
 ):
     if judge_type.startswith("reward"):
         # Process each response individually for reward
@@ -189,20 +220,48 @@ def judge(
             ]
             prompts = [tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True) for prompt in prompts]
 
-            # start generate
+            # generate explanation
+            if explanation:
+                # do an initial generation
+                set_seed(0)
+                explanation_sampling_params = SamplingParams(
+                    temperature=temperature,
+                    top_p=top_p,
+                    n=n_reward_samples,
+                    max_tokens=explanation_max_tokens,
+                    seed=0,
+                    guided_decoding=EXPLANATION_GUIDED_DECODING,
+                    stop=["verdict"],
+                )
+                response = llm.generate(prompts, explanation_sampling_params)
+                # flatten the reponses with cleanup
+                prompts = [result.prompt + cleanup_explanation(output.text) for result in response for output in result.outputs]
+
+            # generate verdict
             set_seed(0)
             sampling_params = SamplingParams(
                 temperature=temperature,
                 top_p=top_p,
-                n=n_reward_samples,
+                n=1 if explanation else n_reward_samples,
                 max_tokens=max_tokens,
                 seed=0,
                 guided_decoding=guided_decoding,
             )
             response = llm.generate(prompts, sampling_params)
 
+            # un-flatten the responses
+            if explanation:
+                unflattened_response = []
+                for prompt_idx in range(0, len(response), n_reward_samples):
+                    group = response[prompt_idx:prompt_idx + n_reward_samples]
+                    unflattened_response.append(group)
+                response = unflattened_response
+
             # add to dataset
-            output = list(map(lambda x: [r.text for r in x.outputs], response))    # Get responses
+            if explanation:
+                output = list(map(lambda x: [r.outputs[0].text for r in x], response))    # Get responses
+            else:
+                output = list(map(lambda x: [r.text for r in x.outputs], response))    # Get responses
             output = list(map(lambda x: [r for r in x if r is not None], output))  # Filter out None's
             output = list(map(lambda x: filter_valid_responses(x, judge_type), output))  # Filter invalid responses
 
@@ -236,20 +295,48 @@ def judge(
                 ]
                 prompts = [tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True) for prompt in prompts]
 
-                # start generate
+                # generate explanation
+                if explanation:
+                    # do an initial generation
+                    set_seed(0)
+                    explanation_sampling_params = SamplingParams(
+                        temperature=temperature,
+                        top_p=top_p,
+                        n=n_reward_samples,
+                        max_tokens=explanation_max_tokens,
+                        seed=0,
+                        guided_decoding=EXPLANATION_GUIDED_DECODING,
+                        stop=["verdict"],
+                    )
+                    response = llm.generate(prompts, explanation_sampling_params)
+                    # flatten the reponses with cleanup
+                    prompts = [result.prompt + cleanup_explanation(output.text) for result in response for output in result.outputs]
+
+                # generate verdict
                 set_seed(0)
                 sampling_params = SamplingParams(
                     temperature=temperature,
                     top_p=top_p,
-                    n=n_reward_samples,
+                    n=1 if explanation else n_reward_samples,
                     max_tokens=max_tokens,
                     seed=0,
                     guided_decoding=guided_decoding,
                 )
                 response = llm.generate(prompts, sampling_params)
 
+                # un-flatten the responses
+                if explanation:
+                    unflattened_response = []
+                    for prompt_idx in range(0, len(response), n_reward_samples):
+                        group = response[prompt_idx:prompt_idx + n_reward_samples]
+                        unflattened_response.append(group)
+                    response = unflattened_response
+
                 # add to dataset
-                output = list(map(lambda x: [r.text for r in x.outputs], response))    # Get responses
+                if explanation:
+                    output = list(map(lambda x: [r.outputs[0].text for r in x], response))    # Get responses
+                else:
+                    output = list(map(lambda x: [r.text for r in x.outputs], response))    # Get responses
                 output = list(map(lambda x: [r for r in x if r is not None], output))  # Filter out None's
                 output = list(map(lambda x: filter_valid_responses(x, judge_type), output))  # Filter invalid responses
 
@@ -275,11 +362,28 @@ def judge(
                     ]
                     prompts_switched = [tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True) for prompt in prompts_switched]
 
+                    # generate explanation
+                    if explanation:
+                        response_switched = llm.generate(prompts_switched, explanation_sampling_params)
+                        # flatten the reponses with cleanup
+                        prompts_switched = [result.prompt + cleanup_explanation(output.text) for result in response_switched for output in result.outputs]
+
                     # Generate switched responses
                     response_switched = llm.generate(prompts_switched, sampling_params)
                     
+                    # un-flatten the responses
+                    if explanation:
+                        unflattened_response = []
+                        for prompt_idx in range(0, len(response_switched), n_reward_samples):
+                            group = response_switched[prompt_idx:prompt_idx + n_reward_samples]
+                            unflattened_response.append(group)
+                        response_switched = unflattened_response
+
                     # Process switched responses
-                    output_switched = list(map(lambda x: [r.text for r in x.outputs], response_switched))
+                    if explanation:
+                        output_switched = list(map(lambda x: [r.outputs[0].text for r in x], response_switched))    # Get responses
+                    else:
+                        output_switched = list(map(lambda x: [r.text for r in x.outputs], response_switched))    # Get responses
                     output_switched = list(map(lambda x: [r for r in x if r is not None], output_switched))
                     output_switched = list(map(lambda x: filter_valid_responses(x, judge_type), output_switched))
 
@@ -310,10 +414,13 @@ def judge(
                         # For categorical scores, extend the list to include both samples
                         # This effectively doubles the sample size for get_winner calculation
                         extended_samples = []
-                        for orig_samples, switched_samples in zip(
-                            list(map(lambda x: [r.text for r in x.outputs], response)),
-                            list(map(lambda x: [r.text for r in x.outputs], response_switched))
-                        ):
+                        if explanation:
+                            orig_texts = [[r.outputs[0].text for r in group] for group in response]
+                            switched_texts = [[r.outputs[0].text for r in group] for group in response_switched]
+                        else:
+                            orig_texts = [[r.text for r in result.outputs] for result in response]
+                            switched_texts = [[r.text for r in result.outputs] for result in response_switched]
+                        for orig_samples, switched_samples in zip(orig_texts, switched_texts):
                             # Filter and reverse each switched sample and combine with original
                             orig_filtered = filter_valid_responses([s for s in orig_samples if s is not None], judge_type)
                             switched_filtered = filter_valid_responses([s for s in switched_samples if s is not None], judge_type)
@@ -404,7 +511,7 @@ def main():
         prompt_template = f.read()
 
     # dataset
-    dataset = load_dataset(args.input_repo, split='train', download_mode="force_redownload")
+    dataset = load_dataset(args.input_repo, split='train')
     
     # Split requirements and create new rows
     expanded_data = []
@@ -457,6 +564,8 @@ def main():
         args.temperature,
         args.top_p,
         args.switch_position,
+        args.explanation,
+        args.explanation_max_tokens,
     )
 
     dataset.push_to_hub(args.input_repo + f'_judge_{args.judge_type}')
