@@ -44,8 +44,8 @@ def parse_arguments():
     parser.add_argument("--gradient_pairs", type=int, default=1, help="number of pairs to use for gradient estimation")
 
     # Parallelism flags
-    parser.add_argument("--tensor_parallel_size", type=int, default=1, help="number of GPUs per replica (TP)")
-    parser.add_argument("--data_parallel_size", type=int, default=2, help="number of replicas (DP)")
+    parser.add_argument("--tensor_parallel_size", type=int, default=2, help="number of GPUs per replica (TP)")
+    parser.add_argument("--data_parallel_size", type=int, default=1, help="number of replicas (DP)")
 
     # Optional: control GPU mem use if desired
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.9)

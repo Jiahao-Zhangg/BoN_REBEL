@@ -6,30 +6,33 @@ from typing import Literal, List, Optional
 from datasets import load_dataset, Dataset
 from pydantic import BaseModel, Field
 from tqdm import tqdm
-from transformers import AutoTokenizer
-from vllm import LLM, SamplingParams
-from vllm.sampling_params import GuidedDecodingParams
+from openai import OpenAI
 
 import argparse
-import torch
 import time
 import random
 import numpy as np
 
 
-REWARD_GUIDED_DECODING = GuidedDecodingParams(choice=[str(i) for i in range(101)])
+# Pydantic models for structured outputs
+class RewardOutput(BaseModel):
+    score: int = Field(ge=0, le=100, description="Reward score from 0 to 100")
 
-PREFERENCE_BINARY_GUIDED_DECODING = GuidedDecodingParams(choice=["A", "B"])
+class PreferenceBinaryOutput(BaseModel):
+    choice: Literal["A", "B"] = Field(description="Preferred response: A or B")
 
-PREFERENCE_TERNARY_GUIDED_DECODING = GuidedDecodingParams(choice=["A", "B", "Tie"])
+class PreferenceTernaryOutput(BaseModel):
+    choice: Literal["A", "B", "Tie"] = Field(description="Preferred response: A, B, or Tie")
 
-PREFERENCE_SCORE_GUIDED_DECODING = GuidedDecodingParams(choice=[str(i) for i in range(11)])
+class PreferenceScoreOutput(BaseModel):
+    score: int = Field(ge=0, le=10, description="Preference score from 0 to 10")
+
+class Preference5ScoreOutput(BaseModel):
+    score: int = Field(ge=-1, le=4, description="Preference score from -1 to 4")
 
 class ExplanationOutput(BaseModel):
-    explanation: str
-    verdict: str
-
-EXPLANATION_GUIDED_DECODING = GuidedDecodingParams(json=ExplanationOutput.model_json_schema())
+    explanation: str = Field(description="Detailed explanation of the judgment")
+    verdict: str = Field(description="Final verdict or score")
 
 
 ## You can also do more complex guided decoding with Pydantic. E.g.:
@@ -42,11 +45,25 @@ EXPLANATION_GUIDED_DECODING = GuidedDecodingParams(json=ExplanationOutput.model_
 # guided = GuidedDecodingParams(json=JudgeOutput.model_json_schema())
 
 
+def get_response_format(judge_type):
+    """Get the appropriate response format for structured output based on judge type."""
+    if judge_type == "reward":
+        return RewardOutput
+    elif judge_type == "preference_binary":
+        return PreferenceBinaryOutput
+    elif judge_type == "preference_ternary":
+        return PreferenceTernaryOutput
+    elif judge_type == "preference_score":
+        return PreferenceScoreOutput
+    elif judge_type == "preference_5score":
+        return Preference5ScoreOutput
+    else:
+        return None
+
+
 def set_seed(seed=5775709):
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
 
 
 def get_winner(values):
@@ -157,8 +174,8 @@ def reverse_score(score, judge_type):
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--judge_model", type=str, default="Qwen/Qwen2.5-72B-Instruct")
-    parser.add_argument("--judge_type", type=str, default="reward", choices=["reward", "preference_binary", "preference_ternary", "preference_score"])
+    parser.add_argument("--judge_model", type=str, default="openai/o3")
+    parser.add_argument("--judge_type", type=str, default="reward", choices=["reward", "preference_binary", "preference_ternary", "preference_score", "preference_5score"])
     parser.add_argument("--input_repo", type=str, default="viswavi/wildchecklists")
     parser.add_argument("--selection_pairs", type=int, default=2, help="number of pairs to use for selecting chosen/reject responses")
     parser.add_argument("--gradient_pairs", type=int, default=0, help="number of pairs to use for gradient estimation")
@@ -200,8 +217,8 @@ def cleanup_explanation(text):
 
     
 def judge(
-    llm, tokenizer, judge_type, prompt_template, guided_decoding, dataset, total_pairs, 
-    max_tokens, world_size, n_reward_samples, temperature, top_p, switch_position,
+    client, judge_type, prompt_template, guided_decoding, dataset, total_pairs, 
+    max_tokens, world_size, n_reward_samples, temperature, top_p, judge_model, switch_position,
     explanation, explanation_max_tokens
 ):
     if judge_type.startswith("reward"):
@@ -213,59 +230,59 @@ def judge(
                 get_message(
                     prompt_template.format(
                         prompt=row['prompt'], 
-                        response=row[f'response_{i}'][1]["content"], 
+                        response=row[f'response_{i}'], 
                         check=row['check']
                     )
                 ) for row in tqdm(dataset)
             ]
-            prompts = [tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True) for prompt in prompts]
 
-            # generate explanation
-            if explanation:
-                # do an initial generation
-                set_seed(0)
-                explanation_sampling_params = SamplingParams(
-                    temperature=temperature,
-                    top_p=top_p,
-                    n=n_reward_samples,
-                    max_tokens=explanation_max_tokens,
-                    seed=0,
-                    guided_decoding=EXPLANATION_GUIDED_DECODING,
-                    stop=["verdict"],
-                )
-                response = llm.generate(prompts, explanation_sampling_params)
-                # flatten the reponses with cleanup
-                prompts = [result.prompt + cleanup_explanation(output.text) for result in response for output in result.outputs]
+            # Get response format for structured output
+            response_format = get_response_format(judge_type)
+            
+            # Process each prompt individually with API calls
+            responses = []
+            for prompt_idx, prompt in enumerate(prompts):
+                content = []
+                for k in range(n_reward_samples):
+                    if explanation:
+                        # First generate explanation
+                        explanation_response = client.chat.completions.parse(
+                            model=judge_model,
+                            messages=prompt,
+                            temperature=temperature,
+                            top_p=top_p,
+                            max_tokens=explanation_max_tokens,
+                            response_format=ExplanationOutput
+                        )
+                        explanation_data = explanation_response.choices[0].message.parsed
+                        content.append(explanation_data.verdict)
+                    else:
+                        # Direct verdict generation without explanation
+                        response = client.chat.completions.parse(
+                            model=judge_model,
+                            messages=prompt,
+                            temperature=temperature,
+                            top_p=top_p,
+                            max_tokens=max_tokens,
+                            response_format=response_format
+                        )
+                        response_data = response.choices[0].message.parsed
+                        
+                        # Extract the actual value from structured response
+                        if judge_type == "reward":
+                            content.append(str(response_data.score))
+                        elif judge_type in ["preference_score", "preference_5score"]:
+                            content.append(str(response_data.score))
+                        else:
+                            content.append(response_data.choice)
+                
+                responses.append(content)
+                print(f"Prompt {prompt_idx+1}/{len(prompts)}: {content}")
 
-            # generate verdict
-            set_seed(0)
-            sampling_params = SamplingParams(
-                temperature=temperature,
-                top_p=top_p,
-                n=1 if explanation else n_reward_samples,
-                max_tokens=max_tokens,
-                seed=0,
-                guided_decoding=guided_decoding,
-            )
-            response = llm.generate(prompts, sampling_params)
+            # Process responses (already in the right format from API calls)
+            output = list(map(lambda x: filter_valid_responses(x, judge_type), responses))  # Filter invalid responses
 
-            # un-flatten the responses
-            if explanation:
-                unflattened_response = []
-                for prompt_idx in range(0, len(response), n_reward_samples):
-                    group = response[prompt_idx:prompt_idx + n_reward_samples]
-                    unflattened_response.append(group)
-                response = unflattened_response
-
-            # add to dataset
-            if explanation:
-                output = list(map(lambda x: [r.outputs[0].text for r in x], response))    # Get responses
-            else:
-                output = list(map(lambda x: [r.text for r in x.outputs], response))    # Get responses
-            output = list(map(lambda x: [r for r in x if r is not None], output))  # Filter out None's
-            output = list(map(lambda x: filter_valid_responses(x, judge_type), output))  # Filter invalid responses
-
-            if judge_type == "preference_score":
+            if judge_type in ["preference_score", "preference_5score"]:
                 output = list(map(lambda x: [int(r) for r in x], output))
                 output = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output))  # Average the scored preferences
             else:
@@ -287,60 +304,58 @@ def judge(
                     get_message(
                         prompt_template.format(
                             prompt=row['prompt'], 
-                            response_a=row[f'response_{i}'][1]["content"], 
-                            response_b=row[f'response_{j}'][1]["content"], 
+                            response_a=row[f'response_{i}'], 
+                            response_b=row[f'response_{j}'], 
                             check=row['check']
                         )
                     ) for row in tqdm(dataset)
                 ]
-                prompts = [tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True) for prompt in prompts]
 
-                # generate explanation
-                if explanation:
-                    # do an initial generation
-                    set_seed(0)
-                    explanation_sampling_params = SamplingParams(
-                        temperature=temperature,
-                        top_p=top_p,
-                        n=n_reward_samples,
-                        max_tokens=explanation_max_tokens,
-                        seed=0,
-                        guided_decoding=EXPLANATION_GUIDED_DECODING,
-                        stop=["verdict"],
-                    )
-                    response = llm.generate(prompts, explanation_sampling_params)
-                    # flatten the reponses with cleanup
-                    prompts = [result.prompt + cleanup_explanation(output.text) for result in response for output in result.outputs]
+                # Get response format for structured output
+                response_format = get_response_format(judge_type)
+                
+                # Process each prompt individually with API calls
+                responses = []
+                for prompt_idx, prompt in enumerate(prompts):
+                    content = []
+                    for k in range(n_reward_samples):
+                        if explanation:
+                            # First generate explanation
+                            explanation_response = client.chat.completions.parse(
+                                model=judge_model,
+                                messages=prompt,
+                                temperature=temperature,
+                                top_p=top_p,
+                                max_tokens=explanation_max_tokens,
+                                response_format=ExplanationOutput
+                            )
+                            explanation_data = explanation_response.choices[0].message.parsed
+                            content.append(explanation_data.verdict)
+                        else:
+                            # Direct verdict generation without explanation
+                            response = client.chat.completions.parse(
+                                model=judge_model,
+                                messages=prompt,
+                                temperature=temperature,
+                                top_p=top_p,
+                                max_tokens=max_tokens,
+                                response_format=response_format
+                            )
+                            response_data = response.choices[0].message.parsed
+                            
+                            # Extract the actual value from structured response
+                            if judge_type in ["reward", "preference_score", "preference_5score"]:
+                                content.append(str(response_data.score))
+                            else:
+                                content.append(response_data.choice)
+                    
+                    responses.append(content)
+                    print(f"Prompt {prompt_idx+1}/{len(prompts)}: {content}")
 
-                # generate verdict
-                set_seed(0)
-                sampling_params = SamplingParams(
-                    temperature=temperature,
-                    top_p=top_p,
-                    n=1 if explanation else n_reward_samples,
-                    max_tokens=max_tokens,
-                    seed=0,
-                    guided_decoding=guided_decoding,
-                )
-                response = llm.generate(prompts, sampling_params)
+                # Process responses (already in the right format from API calls)
+                output = list(map(lambda x: filter_valid_responses(x, judge_type), responses))  # Filter invalid responses
 
-                # un-flatten the responses
-                if explanation:
-                    unflattened_response = []
-                    for prompt_idx in range(0, len(response), n_reward_samples):
-                        group = response[prompt_idx:prompt_idx + n_reward_samples]
-                        unflattened_response.append(group)
-                    response = unflattened_response
-
-                # add to dataset
-                if explanation:
-                    output = list(map(lambda x: [r.outputs[0].text for r in x], response))    # Get responses
-                else:
-                    output = list(map(lambda x: [r.text for r in x.outputs], response))    # Get responses
-                output = list(map(lambda x: [r for r in x if r is not None], output))  # Filter out None's
-                output = list(map(lambda x: filter_valid_responses(x, judge_type), output))  # Filter invalid responses
-
-                if judge_type == "preference_score":
+                if judge_type in ["preference_score", "preference_5score"]:
                     output = list(map(lambda x: [int(r) for r in x], output))
                     output = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output))  # Average the scored preferences
                 else:
@@ -354,40 +369,55 @@ def judge(
                         get_message(
                             prompt_template.format(
                                 prompt=row['prompt'], 
-                                response_a=row[f'response_{j}'][1]["content"], 
-                                response_b=row[f'response_{i}'][1]["content"], 
+                                response_a=row[f'response_{j}'], 
+                                response_b=row[f'response_{i}'], 
                                 check=row['check']
                             )
                         ) for row in tqdm(dataset)
                     ]
-                    prompts_switched = [tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True) for prompt in prompts_switched]
 
-                    # generate explanation
-                    if explanation:
-                        response_switched = llm.generate(prompts_switched, explanation_sampling_params)
-                        # flatten the reponses with cleanup
-                        prompts_switched = [result.prompt + cleanup_explanation(output.text) for result in response_switched for output in result.outputs]
-
-                    # Generate switched responses
-                    response_switched = llm.generate(prompts_switched, sampling_params)
+                    # Generate switched responses with API calls
+                    responses_switched = []
+                    for prompt_idx, prompt in enumerate(prompts_switched):
+                        content = []
+                        for k in range(n_reward_samples):
+                            if explanation:
+                                # First generate explanation
+                                explanation_response = client.chat.completions.parse(
+                                    model=judge_model,
+                                    messages=prompt,
+                                    temperature=temperature,
+                                    top_p=top_p,
+                                    max_tokens=explanation_max_tokens,
+                                    response_format=ExplanationOutput
+                                )
+                                explanation_data = explanation_response.choices[0].message.parsed
+                                content.append(explanation_data.verdict)
+                            else:
+                                # Direct verdict generation without explanation
+                                response = client.chat.completions.parse(
+                                    model=judge_model,
+                                    messages=prompt,
+                                    temperature=temperature,
+                                    top_p=top_p,
+                                    max_tokens=max_tokens,
+                                    response_format=response_format
+                                )
+                                response_data = response.choices[0].message.parsed
+                                
+                                # Extract the actual value from structured response
+                                if judge_type in ["reward", "preference_score", "preference_5score"]:
+                                    content.append(str(response_data.score))
+                                else:
+                                    content.append(response_data.choice)
+                        
+                        responses_switched.append(content)
+                        print(f"Switched Prompt {prompt_idx+1}/{len(prompts_switched)}: {content}")
                     
-                    # un-flatten the responses
-                    if explanation:
-                        unflattened_response = []
-                        for prompt_idx in range(0, len(response_switched), n_reward_samples):
-                            group = response_switched[prompt_idx:prompt_idx + n_reward_samples]
-                            unflattened_response.append(group)
-                        response_switched = unflattened_response
+                    # Process switched responses (already in the right format from API calls)
+                    output_switched = list(map(lambda x: filter_valid_responses(x, judge_type), responses_switched))  # Filter invalid responses
 
-                    # Process switched responses
-                    if explanation:
-                        output_switched = list(map(lambda x: [r.outputs[0].text for r in x], response_switched))    # Get responses
-                    else:
-                        output_switched = list(map(lambda x: [r.text for r in x.outputs], response_switched))    # Get responses
-                    output_switched = list(map(lambda x: [r for r in x if r is not None], output_switched))
-                    output_switched = list(map(lambda x: filter_valid_responses(x, judge_type), output_switched))
-
-                    if judge_type == "preference_score":
+                    if judge_type in ["preference_score", "preference_5score"]:
                         output_switched = list(map(lambda x: [int(r) for r in x], output_switched))
                         output_switched = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output_switched))
                     else:
@@ -397,7 +427,7 @@ def judge(
                     output_switched_reversed = [reverse_score(score, judge_type) if score is not None else None for score in output_switched]
                     
                     # Combine original and reversed scores (double the samples)
-                    if judge_type == "preference_score":
+                    if judge_type in ["preference_score", "preference_5score"]:
                         # For numeric scores, average the original and reversed scores
                         combined_output = []
                         for orig, rev in zip(output, output_switched_reversed):
@@ -414,13 +444,7 @@ def judge(
                         # For categorical scores, extend the list to include both samples
                         # This effectively doubles the sample size for get_winner calculation
                         extended_samples = []
-                        if explanation:
-                            orig_texts = [[r.outputs[0].text for r in group] for group in response]
-                            switched_texts = [[r.outputs[0].text for r in group] for group in response_switched]
-                        else:
-                            orig_texts = [[r.text for r in result.outputs] for result in response]
-                            switched_texts = [[r.text for r in result.outputs] for result in response_switched]
-                        for orig_samples, switched_samples in zip(orig_texts, switched_texts):
+                        for orig_samples, switched_samples in zip(responses, responses_switched):
                             # Filter and reverse each switched sample and combine with original
                             orig_filtered = filter_valid_responses([s for s in orig_samples if s is not None], judge_type)
                             switched_filtered = filter_valid_responses([s for s in switched_samples if s is not None], judge_type)
@@ -497,16 +521,14 @@ def main():
     # prompt template
     if args.judge_type == "reward":
         filename = "prompt_reward.txt"
-        guided_decoding = REWARD_GUIDED_DECODING
     elif args.judge_type == "preference_binary":
         filename = "prompt_preference_binary.txt"
-        guided_decoding = PREFERENCE_BINARY_GUIDED_DECODING
     elif args.judge_type == "preference_ternary":
         filename = "prompt_preference_ternary.txt"
-        guided_decoding = PREFERENCE_TERNARY_GUIDED_DECODING
     elif args.judge_type == "preference_score":
         filename = "prompt_preference_score.txt"
-        guided_decoding = PREFERENCE_SCORE_GUIDED_DECODING
+    elif args.judge_type == "preference_5score":
+        filename = "prompt_preference_5score_explanation.txt"
     with open(Path(__file__).parent / filename, "r") as f:
         prompt_template = f.read()
 
@@ -535,27 +557,24 @@ def main():
             new_row = dict(row)
             new_row['check'] = req.split('(importance:')[0].strip()
             new_row['importance'] = int(req.split('(importance:')[1].split('/')[0].strip())
-            new_row['response_0'] = row['chosen']
-            new_row['response_1'] = row['rejected']
+            # Keep existing response_0 and response_1 fields as they are
             expanded_data.append(new_row)
 
     # Create new dataset from expanded data
     dataset = Dataset.from_list(expanded_data)
 
-    # load model
-    tokenizer = AutoTokenizer.from_pretrained(args.judge_model)
-    llm = LLM(
-        model=args.judge_model,
-        tensor_parallel_size=args.world_size,
+    # Initialize OpenAI client
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key="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",
     )
 
     total_pairs = args.selection_pairs + args.gradient_pairs
     dataset = judge(
-        llm,
-        tokenizer,
+        client,
         args.judge_type,
         prompt_template,
-        guided_decoding,
+        None,  # guided_decoding not used with API
         dataset,
         total_pairs,
         args.max_tokens,
@@ -563,12 +582,13 @@ def main():
         args.n_reward_samples,
         args.temperature,
         args.top_p,
+        args.judge_model,
         args.switch_position,
         args.explanation,
         args.explanation_max_tokens,
     )
 
-    dataset.push_to_hub(args.input_repo + f'_judge_{args.judge_type}')
+    dataset.push_to_hub(args.input_repo + f'_judge_{args.judge_type}_with_explanation')
     print(f'time taken: {time.time() - st}')
 
 

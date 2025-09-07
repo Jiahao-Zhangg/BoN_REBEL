@@ -17,6 +17,10 @@ import seaborn as sns
 MAP = {'A': 4, 'B': 0, 'Tie': 2, -1: -1, 0: 0, 1: 1, 2: 2, 3: 3, 4: 4}
 MAP_TERNARY = {0:0, 1:0, 2:2, 3:4, 4:4}
 
+def round_to_discrete_values(value, discrete_values=[0, 0.25, 0.5, 0.75, 1]):
+    """Round a value to the closest value in the discrete set."""
+    return min(discrete_values, key=lambda x: abs(x - value))
+
 def read_human_annotations(file_path, ternary=False):
     """Read human annotation arrays from the text file."""
     annotations = []
@@ -40,7 +44,7 @@ def read_human_annotations(file_path, ternary=False):
     return annotations
 
 
-def load_judge_preferences(dataset_name, measure='majority', use_reward=False):
+def load_judge_preferences(dataset_name, measure='majority', reward_mode=0):
     """Load judge preferences from Hugging Face dataset."""
     print(f"Loading dataset: {dataset_name}")
     
@@ -62,25 +66,46 @@ def load_judge_preferences(dataset_name, measure='majority', use_reward=False):
         # Extract the judge preferences
         judge_preferences = []
         for i, row in enumerate(data):
-            if use_reward:
-                # Use reward scores: response_0 - response_1
+            if reward_mode > 0:
+                # Use reward scores
                 if measure == 'mean' and 'response_0_mean' in row and 'response_1_mean' in row:
                     response_0 = row['response_0_mean']
                     response_1 = row['response_1_mean']
-                    # Compute difference: response_0 - response_1
-                    pref = [r0 - r1 for r0, r1 in zip(response_0, response_1)]
+                    
+                    if reward_mode == 1:
+                        # Mode 1: Use r_0 - r_1
+                        pref = [r0 - r1 for r0, r1 in zip(response_0, response_1)]
+                        print(f"Row {i} (reward mean, diff): response_0={response_0}, response_1={response_1}, diff={pref}")
+                    elif reward_mode == 2:
+                        # Mode 2: Use Bradley-Terry e(r_0)/(e(r_0)+e(r_1)) rounded to {0, 0.25, 0.5, 0.75, 1}
+                        import math
+                        pref_raw = [math.exp(r0) / (math.exp(r0) + math.exp(r1)) for r0, r1 in zip(response_0, response_1)]
+                        pref = [round_to_discrete_values(p) for p in pref_raw]
+                        print(f"Row {i} (reward mean, Bradley-Terry): response_0={response_0}, response_1={response_1}, raw_bradley_terry={pref_raw}, rounded_bradley_terry={pref}")
+                    
                     judge_preferences.append(pref)
-                    print(f"Row {i} (reward mean): response_0={response_0}, response_1={response_1}, diff={pref}")
                 elif measure == 'majority' and 'response_0_majority' in row and 'response_1_majority' in row:
                     response_0 = row['response_0_majority']
                     response_1 = row['response_1_majority']
-                    # Compute difference: response_0 - response_1
-                    pref = [r0 - r1 for r0, r1 in zip(response_0, response_1)]
+                    
+                    if reward_mode == 1:
+                        # Mode 1: Use r_0 - r_1
+                        pref = [r0 - r1 for r0, r1 in zip(response_0, response_1)]
+                        print(f"Row {i} (reward majority, diff): response_0={response_0}, response_1={response_1}, diff={pref}")
+                    elif reward_mode == 2:
+                        # Mode 2: Use Bradley-Terry e(r_0)/(e(r_0)+e(r_1)) rounded to {0, 0.25, 0.5, 0.75, 1}
+                        import math
+                        beta = 25
+                        pref_raw = [math.exp(r0/beta) / (math.exp(r0/beta) + math.exp(r1/beta)) for r0, r1 in zip(response_0, response_1)]
+                        pref = [round_to_discrete_values(p) for p in pref_raw]
+                        print(f"Row {i} (reward majority, Bradley-Terry): response_0={response_0}, response_1={response_1}, raw_bradley_terry={pref_raw}, rounded_bradley_terry={pref}")
+                    
                     judge_preferences.append(pref)
-                    print(f"Row {i} (reward majority): response_0={response_0}, response_1={response_1}, diff={pref}")
                 else:
                     print(f"Warning: Row {i} missing reward columns for measure '{measure}'")
                     print(f"Available columns: {list(row.keys())}")
+                # Skip preference judgment logic when in reward mode
+                continue
             else:
                 # Use preference judgments (original logic)
                 if measure == 'majority' and 'response_0_1_judged_preference_majority' in row:
@@ -89,6 +114,11 @@ def load_judge_preferences(dataset_name, measure='majority', use_reward=False):
                     judge_preferences.append(pref)
                 elif measure == 'mean' and 'response_0_1_judged_preference_mean' in row:
                     pref = row['response_0_1_judged_preference_mean']
+                    # pref = list(map(lambda x: MAP[x], pref))
+                    judge_preferences.append(pref)
+                    print(f"Row {i}: {pref}")
+                elif measure == 'mean' and 'response_0_1_judged_preference' in row:
+                    pref = row['response_0_1_judged_preference']
                     # pref = list(map(lambda x: MAP[x], pref))
                     judge_preferences.append(pref)
                     print(f"Row {i}: {pref}")
@@ -104,7 +134,11 @@ def load_judge_preferences(dataset_name, measure='majority', use_reward=False):
         return judge_preferences
         
     except Exception as e:
-        print(f"Error loading dataset: {e}")
+        print(f"Error loading dataset '{dataset_name}': {e}")
+        print(f"Exception type: {type(e).__name__}")
+        import traceback
+        print(f"Full traceback:")
+        traceback.print_exc()
         return None
 
 
@@ -325,8 +359,8 @@ def main():
     parser.add_argument("--ternary", action='store_true', help="Use ternary preference")
     parser.add_argument("--measure", choices=['majority', 'mean'], default='majority',
                        help="Measure to use for preference")
-    parser.add_argument("--reward", action='store_true',
-                       help="Use reward scores (response_0 - response_1) instead of preference judgments")
+    parser.add_argument("--reward", type=int, choices=[0, 1, 2], default=0,
+                       help="Reward mode: 0=no use, 1=use r_0-r_1, 2=use Bradley-Terry e(r_0)/(e(r_0)+e(r_1))")
     args = parser.parse_args()
     
     # Ensure we have labels for all datasets
@@ -345,7 +379,7 @@ def main():
     
     # Load all judge preference datasets (Y, Z, W, ...)
     all_datasets = [x_data]  # Start with human data (X)
-    all_labels = ['human'] + args.dataset_labels
+    all_labels = ['human']  # Start with human label
     
     print(f"\n2. Loading {len(args.datasets)} judge preference datasets:")
     for i, dataset_name in enumerate(args.datasets):
@@ -361,6 +395,7 @@ def main():
             print(f"    Array {j}: {arr}")
         
         all_datasets.append(judge_data)
+        all_labels.append(args.dataset_labels[i])  # Only add label if dataset loaded successfully
     
     # Verify all datasets have the same number of arrays
     if len(set(len(dataset) for dataset in all_datasets)) > 1:
@@ -372,7 +407,6 @@ def main():
         min_len = min(len(dataset) for dataset in all_datasets)
         print(f"Truncating all datasets to {min_len} arrays")
         all_datasets = [dataset[:min_len] for dataset in all_datasets]
-        all_labels = all_labels[:len(all_datasets)]
     
     # Compute correlation matrices
     print(f"\n3. Computing Pearson correlation matrix")

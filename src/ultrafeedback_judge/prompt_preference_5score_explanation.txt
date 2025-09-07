@@ -1,0 +1,67 @@
+Based on the provided input instruction and two responses from a worker, assess two responses based on the
+following criteria:
+1. Does each of the two responses satisfy the specific requests of the instruction?
+2. Does each of the two responses directly address the request without excessive or off-topic information not
+necessary for addressing the user’s instruction?
+3. Does each of the two responses match the context and the instruction, whether it requires professionalism, friendliness, formality, or neutrality?
+
+Accordingly, assign a score (in {{0,1,2,3,4}}) to indicate the preference for the first response over the second assessing how well the first response addresses the instruction compared to the second response. 
+
+For example, the input instruction might be "What is a good vegan substitute to meat for someone allergic to soy and gluten? Provide a single-sentence response consisting of an answer followed by a factually detailed and humorous one-sentence explanation". Your selection should be based on the two responses and the instruction, using the following rating scale:
+
+- 4: Select 4 if the first response is much better than the second response. It clearly and strongly outperforms the second response in balancing all relevant aspects of the instruction. For the example above (about the vegan substitute), and the criterion above (about factual detail), consider two responses:
+(1)“Mushrooms, because they can be easily caramelized and browned, they are rich in the glutamates which lead to incredible umami flavors, they naturally are completely free of soy and gluten, and they don’t look cute as babies.”
+(2)“Mushrooms are tasty.”
+   You should select 4 because response(1) is richly detailed and factual, and though it fails to be humorous while response(2) contains zero factual detail about mushrooms, critically violating the question.
+
+- 3: Select 3 if the first response is somewhat better than the second response in addressing the instruction. Note that both responses may or may not effectively address the main requirements, you should select 3 as long as the first response is better but not overwhelmingly better than the second response. For example, consider two responses:
+(1)“Mushrooms, because they can be easily caramelized and browned, they are rich in the glutamates which lead to incredible umami flavors, they naturally are completely free of soy and gluten, and they don’t look cute as babies.”
+(2)“Mushrooms - they are rich in the glutamates that lead to incredible umami flavors and they don’t look cute in the slightest while alive.”
+You should select 3 because both responses are acceptable but response(1) has more details than response(2).
+Another 3-point example:
+(1)“Mushrooms, because they can be cooked easily and are gluten-free”
+(2)“Mushrooms are tasty.”
+You should select 3 even if both responses don’t effectively fulfill the instruction but at least response(1) includes one point “gluten-free” compared to response(2).
+
+- 2: The two responses are about equally good or bad in addressing the instruction with no major difference in quality. For example:
+(1)“Mushrooms, because they contain natural glutamates that create a strong umami flavor.”
+(2)“Mushrooms, because they are rich in compounds that give them a savory umami taste.”
+You should select 2 because both responses have similar factual detail (umami from glutamates/compounds) and meet the instruction equally well.
+Another 2-point example:
+(1)“Mushrooms are tasty.”
+(2)“Mushrooms, because they can be cooked easily.”
+You should select 2 because both responses fail to contain factual details.
+
+- 1: Select 1 if the first response is somewhat worse than the second response in addressing the instruction. Note that both responses may or may not effectively address the main requirements, you should select 1 as long as the first response is worse but not overwhelmingly worse than the second response. For example, consider two responses:
+(1)“Mushrooms - they are rich in the glutamates that lead to incredible umami flavors and they don’t look cute in the slightest while alive.”
+(2)“Mushrooms, because they can be easily caramelized and browned, they are rich in the glutamates which lead to incredible umami flavors, they naturally are completely free of soy and gluten, and they don’t look cute as babies.”
+You should select 1 because both responses are acceptable but response(1) has less details than response(2).
+Another 1-point example:
+(1)“Mushrooms are tasty.”
+(2)“Mushrooms, because they can be cooked easily and are gluten-free”
+You should select 1 even if both responses don’t effectively fulfill the instruction but response(1) has no factual details at all and response(2)at least includes one point “gluten-free”.
+
+- 0: Select 0 if the first response is much worse than the second response. The second response clearly and strongly outperforms the first response in balancing all relevant aspects of the instruction. For the example above (about the vegan substitute), and the criterion above (about factual detail), consider two responses:
+(1)“Mushrooms are tasty.”
+(2)“Mushrooms, because they can be easily caramelized and browned, they are rich in the glutamates which lead to incredible umami flavors, they naturally are completely free of soy and gluten, and they don’t look cute as babies.”
+You should select 0 because response(1) contains zero factual detail about mushrooms, critically violating the question while response(2) is richly detailed and factual, and though it fails to be humorous.
+
+Important Reminder: The score must always reflect your preference for the first response over the second. This is a relative judgment — do not evaluate each response in isolation. Even if both responses are good (or both are bad), you must choose a score based on comparison.
+Your score can be any number in {{0,1,2,3,4}}. If you are totally confused, return -1 as a default. You should use your judgment to determine the most appropriate score. Focus on the posed question and ignore other aspects of response quality not implied by the question. 
+First provide a short 1-2 explanation of your choice and why you made it. Then provide your verdict as a single number in {{0,1,2,3,4}}. Use the format: `{{"explanation":"...", "verdict":"..."}}`
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Input:
+{prompt}
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Generated Text A:
+{response_a}
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Generated Text B:
+{response_b}
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Question:
+{check}
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Preference: 

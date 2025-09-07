@@ -25,6 +25,8 @@ PREFERENCE_TERNARY_GUIDED_DECODING = GuidedDecodingParams(choice=["A", "B", "Tie
 
 PREFERENCE_SCORE_GUIDED_DECODING = GuidedDecodingParams(choice=[str(i) for i in range(11)])
 
+PREFERENCE_5SCORE_GUIDED_DECODING = GuidedDecodingParams(choice=[str(i) for i in range(-1, 5)])
+
 class ExplanationOutput(BaseModel):
     explanation: str
     verdict: str
@@ -158,12 +160,12 @@ def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--judge_model", type=str, default="Qwen/Qwen2.5-72B-Instruct")
-    parser.add_argument("--judge_type", type=str, default="reward", choices=["reward", "preference_binary", "preference_ternary", "preference_score"])
+    parser.add_argument("--judge_type", type=str, default="reward", choices=["reward", "preference_binary", "preference_ternary", "preference_score", "preference_5score"])
     parser.add_argument("--input_repo", type=str, default="viswavi/wildchecklists")
     parser.add_argument("--selection_pairs", type=int, default=2, help="number of pairs to use for selecting chosen/reject responses")
     parser.add_argument("--gradient_pairs", type=int, default=0, help="number of pairs to use for gradient estimation")
     parser.add_argument("--max_tokens", type=int, default=20, help="max tokens to generate by the judge model")
-    parser.add_argument("--world_size", type=int, default=2)
+    parser.add_argument("--world_size", type=int, default=4)
 
     parser.add_argument("--n_reward_samples", type=int, default=5)
     parser.add_argument("--temperature", type=float, default=1.3)
@@ -213,7 +215,7 @@ def judge(
                 get_message(
                     prompt_template.format(
                         prompt=row['prompt'], 
-                        response=row[f'response_{i}'][1]["content"], 
+                        response=row[f'response_{i}'], 
                         check=row['check']
                     )
                 ) for row in tqdm(dataset)
@@ -265,11 +267,11 @@ def judge(
             output = list(map(lambda x: [r for r in x if r is not None], output))  # Filter out None's
             output = list(map(lambda x: filter_valid_responses(x, judge_type), output))  # Filter invalid responses
 
-            if judge_type == "preference_score":
+            if judge_type in ["preference_score", "preference_5score"]:
                 output = list(map(lambda x: [int(r) for r in x], output))
                 output = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output))  # Average the scored preferences
             else:
-                output = list(map(lambda x: [int(r) for r in x], output))
+                output = list(map(lambda x: get_winner(x) if len(x) > 0 else None, output))
                 output = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output))  # Average the rewards
 
             dataset = dataset.add_column(f"response_{i}_judged_reward", output)
@@ -287,8 +289,8 @@ def judge(
                     get_message(
                         prompt_template.format(
                             prompt=row['prompt'], 
-                            response_a=row[f'response_{i}'][1]["content"], 
-                            response_b=row[f'response_{j}'][1]["content"], 
+                            response_a=row[f'response_{i}'], 
+                            response_b=row[f'response_{j}'], 
                             check=row['check']
                         )
                     ) for row in tqdm(dataset)
@@ -340,7 +342,7 @@ def judge(
                 output = list(map(lambda x: [r for r in x if r is not None], output))  # Filter out None's
                 output = list(map(lambda x: filter_valid_responses(x, judge_type), output))  # Filter invalid responses
 
-                if judge_type == "preference_score":
+                if judge_type in ["preference_score", "preference_5score"]:
                     output = list(map(lambda x: [int(r) for r in x], output))
                     output = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output))  # Average the scored preferences
                 else:
@@ -354,8 +356,8 @@ def judge(
                         get_message(
                             prompt_template.format(
                                 prompt=row['prompt'], 
-                                response_a=row[f'response_{j}'][1]["content"], 
-                                response_b=row[f'response_{i}'][1]["content"], 
+                                response_a=row[f'response_{j}'], 
+                                response_b=row[f'response_{i}'], 
                                 check=row['check']
                             )
                         ) for row in tqdm(dataset)
@@ -387,7 +389,7 @@ def judge(
                     output_switched = list(map(lambda x: [r for r in x if r is not None], output_switched))
                     output_switched = list(map(lambda x: filter_valid_responses(x, judge_type), output_switched))
 
-                    if judge_type == "preference_score":
+                    if judge_type in ["preference_score", "preference_5score"]:
                         output_switched = list(map(lambda x: [int(r) for r in x], output_switched))
                         output_switched = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output_switched))
                     else:
@@ -395,9 +397,12 @@ def judge(
 
                     # Reverse the switched scores and combine with original
                     output_switched_reversed = [reverse_score(score, judge_type) if score is not None else None for score in output_switched]
-                    
+
+                    print(output)
+                    print(output_switched_reversed)
+                    print("--------------------------------")
                     # Combine original and reversed scores (double the samples)
-                    if judge_type == "preference_score":
+                    if judge_type in ["preference_score", "preference_5score"]:
                         # For numeric scores, average the original and reversed scores
                         combined_output = []
                         for orig, rev in zip(output, output_switched_reversed):
@@ -507,6 +512,9 @@ def main():
     elif args.judge_type == "preference_score":
         filename = "prompt_preference_score.txt"
         guided_decoding = PREFERENCE_SCORE_GUIDED_DECODING
+    elif args.judge_type == "preference_5score":
+        filename = "prompt_preference_5score_explanation.txt"
+        guided_decoding = PREFERENCE_5SCORE_GUIDED_DECODING
     with open(Path(__file__).parent / filename, "r") as f:
         prompt_template = f.read()
 
@@ -535,8 +543,7 @@ def main():
             new_row = dict(row)
             new_row['check'] = req.split('(importance:')[0].strip()
             new_row['importance'] = int(req.split('(importance:')[1].split('/')[0].strip())
-            new_row['response_0'] = row['chosen']
-            new_row['response_1'] = row['rejected']
+
             expanded_data.append(new_row)
 
     # Create new dataset from expanded data
@@ -568,7 +575,7 @@ def main():
         args.explanation_max_tokens,
     )
 
-    dataset.push_to_hub(args.input_repo + f'_judge_{args.judge_type}')
+    dataset.push_to_hub('zjhhhh/' + f'qwen_4B_switch_explanation')
     print(f'time taken: {time.time() - st}')
 
 
