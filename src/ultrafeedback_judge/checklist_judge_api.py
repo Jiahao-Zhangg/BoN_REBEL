@@ -2,7 +2,7 @@ import os
 from collections import Counter
 from pathlib import Path
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 from datasets import load_dataset, Dataset
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -14,6 +14,8 @@ import torch
 import time
 import random
 import numpy as np
+import asyncio
+from typing import List, Any
 
 
 REWARD_GUIDED_DECODING = GuidedDecodingParams(choice=[str(i) for i in range(101)])
@@ -161,8 +163,10 @@ def parse_arguments():
     parser.add_argument("--n_reward_samples", type=int, default=5)
     parser.add_argument("--temperature", type=float, default=1.3)
     parser.add_argument("--top_p", type=float, default=0.9)
-    parser.add_argument("--judge_model", type=str, default="openai/o3")
+    parser.add_argument("--judge_model", type=str, default="qwen/qwen-2.5-72b-instruct")
     parser.add_argument("--switch_position", action="store_true", default=False, help="collect preferences in both directions to handle positional bias")
+    parser.add_argument("--batch_size", type=int, default=10, help="number of concurrent API calls to make")
+    parser.add_argument("--max_concurrent", type=int, default=50, help="maximum number of concurrent API calls")
 
     return parser.parse_args()
 
@@ -170,9 +174,53 @@ def get_message(instruction):
     return [{"role": "user", "content": instruction}]
 
 
-def judge(
+async def make_api_call_async(client: AsyncOpenAI, prompt: List[dict], judge_model: str, semaphore: asyncio.Semaphore) -> str:
+    """Make a single async API call with semaphore for rate limiting."""
+    async with semaphore:
+        try:
+            response = await client.chat.completions.create(
+                model=judge_model,
+                messages=prompt
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Error in API call: {e}")
+            return None
+
+
+async def batch_api_calls_async(client: AsyncOpenAI, prompts: List[List[dict]], judge_model: str, n_samples: int, max_concurrent: int) -> List[List[str]]:
+    """Make batched async API calls for all prompts and samples."""
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    # Create all tasks for all prompts and samples
+    tasks = []
+    for prompt_idx, prompt in enumerate(prompts):
+        for sample_idx in range(n_samples):
+            task = make_api_call_async(client, prompt, judge_model, semaphore)
+            tasks.append((prompt_idx, sample_idx, task))
+    
+    # Execute all tasks concurrently
+    print(f"Making {len(tasks)} concurrent API calls...")
+    results = await asyncio.gather(*[task for _, _, task in tasks], return_exceptions=True)
+    
+    # Organize results back into the expected format
+    organized_results = [[] for _ in range(len(prompts))]
+    for (prompt_idx, sample_idx, _), result in zip(tasks, results):
+        if isinstance(result, Exception):
+            print(f"Exception for prompt {prompt_idx}, sample {sample_idx}: {result}")
+            organized_results[prompt_idx].append(None)
+        elif result is None:
+            print(f"None result for prompt {prompt_idx}, sample {sample_idx}")
+            organized_results[prompt_idx].append(None)
+        else:
+            organized_results[prompt_idx].append(result)
+    
+    return organized_results
+
+
+async def judge(
     client, judge_type, prompt_template, guided_decoding, dataset, total_pairs, 
-    max_tokens, world_size, n_reward_samples, temperature, top_p, judge_model, switch_position
+    max_tokens, world_size, n_reward_samples, temperature, top_p, judge_model, switch_position, max_concurrent
 ):
     if judge_type.startswith("reward"):
         # Process each response individually for reward
@@ -189,7 +237,7 @@ def judge(
                 ) for row in tqdm(dataset)
             ]
             
-            dataset = _process_judge_responses(client, prompts, dataset, judge_type, i, None, n_reward_samples, judge_model, False, prompt_template)
+            dataset = await _process_judge_responses_async(client, prompts, dataset, judge_type, i, None, n_reward_samples, judge_model, False, prompt_template, max_concurrent)
     
     elif judge_type.startswith("preference"):
         # Process all pairs for preference comparison
@@ -208,9 +256,155 @@ def judge(
                     ) for row in tqdm(dataset)
                 ]
                 
-                dataset = _process_judge_responses(client, prompts, dataset, judge_type, i, j, n_reward_samples, judge_model, switch_position, prompt_template)
+                dataset = await _process_judge_responses_async(client, prompts, dataset, judge_type, i, j, n_reward_samples, judge_model, switch_position, prompt_template, max_concurrent)
 
     return _merge_dataset_results(dataset, judge_type, total_pairs)
+
+
+async def _process_judge_responses_async(client, prompts, dataset, judge_type, i, j, n_reward_samples, judge_model, switch_position=False, prompt_template=None, max_concurrent=50):
+    # Use async batch API calls instead of sequential calls
+    responses = await batch_api_calls_async(client, prompts, judge_model, n_reward_samples, max_concurrent)
+    
+    # Print progress
+    for prompt_idx, content in enumerate(responses):
+        print(f"Prompt {prompt_idx+1}/{len(prompts)}: {content}")
+
+    # If switch_position is enabled and this is a preference task, also collect reversed preferences
+    if switch_position and judge_type.startswith("preference") and j is not None:
+        print(f'gathering preference for response {j+1} vs {i+1} (switched)')
+        
+        # Create switched prompts
+        prompts_switched = [
+            get_message(
+                prompt_template.format(
+                    prompt=row['prompt'], 
+                    response_a=row[f'response_{j}'], 
+                    response_b=row[f'response_{i}'], 
+                    check=row['check']
+                )
+            ) for row in tqdm(dataset)
+        ]
+        
+        # Generate switched responses using async calls
+        responses_switched = await batch_api_calls_async(client, prompts_switched, judge_model, n_reward_samples, max_concurrent)
+        
+        for prompt_idx, content in enumerate(responses_switched):
+            print(f"Switched Prompt {prompt_idx+1}/{len(prompts_switched)}: {content}")
+        
+        # Combine original and switched responses
+        combined_responses = []
+        for orig_content, switched_content in zip(responses, responses_switched):
+            # Filter valid responses first
+            orig_filtered = filter_valid_responses(orig_content, judge_type)
+            switched_filtered = filter_valid_responses(switched_content, judge_type)
+            # Reverse the switched responses and combine with original
+            reversed_switched = [reverse_score(sample, judge_type) for sample in switched_filtered]
+            combined_content = orig_filtered + reversed_switched
+            combined_responses.append(combined_content)
+        
+        responses = combined_responses
+
+    # add to dataset
+    # Process responses to match dataset length
+    output_majority = []
+    output_mean = []
+    for response_idx, response_list in enumerate(responses):
+        if response_list is not None:
+            # Filter valid responses first (unless already filtered for switch_position)
+            if not (switch_position and judge_type.startswith("preference") and j is not None):
+                response_list = filter_valid_responses(response_list, judge_type)
+            
+            if judge_type.startswith("reward") or judge_type == "preference_score":
+                # Convert to numbers
+                valid_responses = []
+                for response in response_list:
+                    try:
+                        parsed_response = int(response)
+                        valid_responses.append(parsed_response)
+                    except:
+                        continue
+                
+                if valid_responses:
+                    # Calculate majority (most common response)
+                    from collections import Counter
+                    counts = Counter(valid_responses)
+                    majority_value = counts.most_common(1)[0][0]
+                    output_majority.append(majority_value)
+                    
+                    # Calculate mean excluding -1 values
+                    valid_for_mean = [x for x in valid_responses if x != -1]
+                    if valid_for_mean:
+                        mean_value = sum(valid_for_mean) / len(valid_for_mean)
+                        output_mean.append(mean_value)
+                    else:
+                        print(f"Warning: No valid responses for mean calculation (all -1) for prompt {response_idx+1}")
+                        output_mean.append(None)
+                else:
+                    print(f"Warning: No valid numeric responses for prompt {response_idx+1}")
+                    output_majority.append(None)
+                    output_mean.append(None)
+                    
+            elif judge_type.startswith("preference"):
+                if judge_type == "preference_5score":
+                    # For preference_5score, treat as numeric and compute both majority and mean
+                    valid_responses = []
+                    for response in response_list:
+                        try:
+                            parsed_response = int(response)
+                            valid_responses.append(parsed_response)
+                        except:
+                            continue
+                    
+                    if valid_responses:
+                        # Calculate majority (most common response)
+                        from collections import Counter
+                        counts = Counter(valid_responses)
+                        majority_value = counts.most_common(1)[0][0]
+                        output_majority.append(majority_value)
+                        
+                        # Calculate mean excluding -1 values
+                        valid_for_mean = [x for x in valid_responses if x != -1]
+                        if valid_for_mean:
+                            mean_value = sum(valid_for_mean) / len(valid_for_mean)
+                            output_mean.append(mean_value)
+                        else:
+                            print(f"Warning: No valid responses for mean calculation (all -1) for prompt {response_idx+1}")
+                            output_mean.append(None)
+                    else:
+                        print(f"Warning: No valid numeric responses for prompt {response_idx+1}")
+                        output_majority.append(None)
+                        output_mean.append(None)
+                elif judge_type == "preference_ternary":
+                    # For categorical preferences (A, B, Tie), already filtered
+                    if response_list:
+                        # Use the existing get_winner function to find majority
+                        MAP = {'A': 1, 'B': 0, 'Tie': 0.5}
+                        parsed_value = get_winner(response_list)
+                        response_list = list(map(lambda x: MAP[x], response_list))
+                        output_majority.append(parsed_value)
+                        # For categorical preference types, mean doesn't apply
+                        output_mean.append(np.mean(response_list))
+                    else:
+                        print(f"Warning: No valid preference responses for prompt {response_idx+1}")
+                        output_majority.append(None)
+                        output_mean.append(None)
+        else:
+            output_majority.append(None)
+            output_mean.append(None)
+
+    # Add columns to dataset based on judge type
+    if judge_type.startswith("reward"):
+        dataset = dataset.add_column(f"response_{i}_judged_reward_majority", output_majority)
+        dataset = dataset.add_column(f"response_{i}_judged_reward_mean", output_mean)
+        # filter out invalid judgements (None's) - filter based on majority column
+        dataset = dataset.filter(lambda row: row[f"response_{i}_judged_reward_majority"] is not None)
+    elif judge_type.startswith("preference"):
+        dataset = dataset.add_column(f"response_{i}_{j}_judged_preference_majority", output_majority)
+        dataset = dataset.add_column(f"response_{i}_{j}_judged_preference_mean", output_mean)
+        # filter out invalid judgements (None's) - filter based on majority column
+        dataset = dataset.filter(lambda row: row[f"response_{i}_{j}_judged_preference_majority"] is not None)
+    
+    return dataset
 
 
 def _process_judge_responses(client, prompts, dataset, judge_type, i, j, n_reward_samples, judge_model, switch_position=False, prompt_template=None):
@@ -348,8 +542,8 @@ def _process_judge_responses(client, prompts, dataset, judge_type, i, j, n_rewar
                     if response_list:
                         # Use the existing get_winner function to find majority
                         MAP = {'A': 1, 'B': 0, 'Tie': 0.5}
-                        response_list = list(map(lambda x: MAP[x], response_list))
                         parsed_value = get_winner(response_list)
+                        response_list = list(map(lambda x: MAP[x], response_list))
                         output_majority.append(parsed_value)
                         # For categorical preference types, mean doesn't apply
                         output_mean.append(np.mean(response_list))
@@ -443,7 +637,7 @@ def _merge_dataset_results(dataset, judge_type, total_pairs):
     return dataset
 
 
-def main():
+async def main():
     # init
     st = time.time()
     args = parse_arguments()
@@ -470,7 +664,7 @@ def main():
     # dataset
     # dataset = load_dataset(args.input_repo, split='train', download_mode="force_redownload")
     dataset = load_dataset(args.input_repo, split='train')
-    dataset = dataset.select(range(10))
+    # dataset = dataset.select(range(10, 20))
     
     # Split requirements and create new rows
     expanded_data = []
@@ -501,14 +695,14 @@ def main():
     # Create new dataset from expanded data
     dataset = Dataset.from_list(expanded_data)
 
-    client = OpenAI(
+    client = AsyncOpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key="",
         )
 
     # load model
     total_pairs = args.selection_pairs + args.gradient_pairs
-    dataset = judge(
+    dataset = await judge(
         client,
         args.judge_type,
         prompt_template,
@@ -522,11 +716,14 @@ def main():
         args.top_p,
         args.judge_model,
         args.switch_position,
+        args.max_concurrent,
     )
     
-    dataset.push_to_hub('MisDrifter/' + f'_judge_{args.judge_type}')
+    # dataset.push_to_hub('MisDrifter/' + f'_judge_{args.judge_type}_{args.selection_pairs}pairs_switch')
+    dataset.push_to_hub('MisDrifter/try')
+
     print(f'time taken: {time.time() - st}')
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
