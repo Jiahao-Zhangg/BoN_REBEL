@@ -236,6 +236,9 @@ def judge(
 
             if judge_type in ["preference_score", "preference_5score"]:
                 output = list(map(lambda x: [int(r) for r in x], output))
+                if judge_type == "preference_5score":
+                    # Filter out -1 values before computing mean
+                    output = list(map(lambda x: [r for r in x if r != -1], output))
                 output = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output))  # Average the scored preferences
             else:
                 output = list(map(lambda x: get_winner(x) if len(x) > 0 else None, output))  # Pick most common answer
@@ -267,6 +270,9 @@ def judge(
 
                 if judge_type in ["preference_score", "preference_5score"]:
                     output_switched = list(map(lambda x: [int(r) for r in x], output_switched))
+                    if judge_type == "preference_5score":
+                        # Filter out -1 values before computing mean
+                        output_switched = list(map(lambda x: [r for r in x if r != -1], output_switched))
                     output_switched = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output_switched))
                 else:
                     output_switched = list(map(lambda x: get_winner(x) if len(x) > 0 else None, output_switched))
