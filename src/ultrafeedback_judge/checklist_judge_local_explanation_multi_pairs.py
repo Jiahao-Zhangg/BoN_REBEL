@@ -69,6 +69,45 @@ def get_winner(values):
     return winners[0]
 
 
+def get_numeric_mode(values, score_range=None):
+    """
+    Get the mode (most frequent value) from a list of numeric values.
+    For numeric scores ranging from 0 to max_score.
+    
+    Args:
+        values: List of numeric values
+        score_range: Tuple of (min_score, max_score) for the valid range
+        
+    Returns:
+        The most frequent value, or the median of tied values if multiple modes exist
+    """
+    if not values:
+        return None
+    
+    # Convert to integers and filter valid values if score_range is provided
+    if score_range:
+        min_score, max_score = score_range
+        values = [int(v) for v in values if min_score <= int(v) <= max_score]
+    else:
+        values = [int(v) for v in values]
+    
+    if not values:
+        return None
+    
+    counts = Counter(values)
+    max_count = max(counts.values())
+    modes = [k for k, v in counts.items() if v == max_count]
+    
+    # If there's a unique mode, return it
+    if len(modes) == 1:
+        return modes[0]
+    
+    # If there are multiple modes, return the median of the modes
+    # This provides a reasonable tie-breaking strategy for numeric values
+    modes.sort()
+    return modes[len(modes) // 2]
+
+
 def is_valid_response(response, judge_type):
     """
     Check if a response is valid for the given judge type.
@@ -165,7 +204,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--judge_model", type=str, default="Qwen/Qwen2.5-72B-Instruct")
     parser.add_argument("--judge_type", type=str, default="preference_5score", choices=["preference_binary", "preference_ternary", "preference_score", "preference_5score"])
-    parser.add_argument("--input_repo", type=str, default="viswavi/wildchecklists")
+    parser.add_argument("--input_repo", type=str, default="zjhhhh/Qwen2.5_3B_generation")
     parser.add_argument("--selection_pairs", type=int, default=3, help="number of selection responses")
     parser.add_argument("--base_pairs", type=int, default=2, help="number of base responses")
     parser.add_argument("--current_pairs", type=int, default=2, help="number of current responses")
@@ -234,19 +273,15 @@ def judge(
             )
             response = llm.generate(prompts, sampling_params)
 
-            # add to dataset
-            output = list(map(lambda x: [r.text for r in x.outputs], response))    # Get responses
-            output = list(map(lambda x: [r for r in x if r is not None], output))  # Filter out None's
-            output = list(map(lambda x: [extract_verdict(r) for r in x], output))  # Get verdict from json
-            output = list(map(lambda x: filter_valid_responses(x, judge_type), output))  # Filter invalid responses
-
-            if judge_type in ["preference_score", "preference_5score"]:
-                output = list(map(lambda x: [int(r) for r in x], output))
-                if judge_type == "preference_5score":
-                    output = list(map(lambda x: [r for r in x if r != -1], output))  # Filter out -1 values for 5score
-                output = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output))  # Average the scored preferences
-            else:
-                output = list(map(lambda x: get_winner(x) if len(x) > 0 else None, output))  # Pick most common answer
+            # Collect all samples (original + switched if enabled)
+            all_samples = []
+            
+            # Process original responses
+            orig_texts = [[extract_verdict(r.text) for r in result.outputs] for result in response]
+            for orig_samples in orig_texts:
+                # Filter valid responses
+                orig_filtered = filter_valid_responses([s for s in orig_samples if s is not None], judge_type)
+                all_samples.append(orig_filtered)
 
             # If switch_position is enabled, also collect preferences in reversed direction
             if switch_position:
@@ -267,61 +302,66 @@ def judge(
                 # Generate switched responses
                 response_switched = llm.generate(prompts_switched, sampling_params)
                 
-                # Process switched responses
-                output_switched = list(map(lambda x: [r.text for r in x.outputs], response_switched))    # Get responses
-                output_switched = list(map(lambda x: [r for r in x if r is not None], output_switched))
-                output_switched = list(map(lambda x: [extract_verdict(r) for r in x], output_switched))  # Get verdict from json
-                output_switched = list(map(lambda x: filter_valid_responses(x, judge_type), output_switched))
+                # Process switched responses and combine with original
+                switched_texts = [[extract_verdict(r.text) for r in result.outputs] for result in response_switched]
+                for idx, switched_samples in enumerate(switched_texts):
+                    # Filter and reverse each switched sample
+                    switched_filtered = filter_valid_responses([s for s in switched_samples if s is not None], judge_type)
+                    reversed_switched = [reverse_score(sample, judge_type) for sample in switched_filtered]
+                    # Combine with original samples
+                    all_samples[idx].extend(reversed_switched)
 
-                if judge_type in ["preference_score", "preference_5score"]:
-                    output_switched = list(map(lambda x: [int(r) for r in x], output_switched))
-                    if judge_type == "preference_5score":
-                        output_switched = list(map(lambda x: [r for r in x if r != -1], output_switched))  # Filter out -1 values for 5score
-                    output_switched = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output_switched))
+            # Now calculate mean and majority from all combined samples
+            if judge_type in ["preference_score", "preference_5score"]:
+                # For numeric scores, calculate both mean and majority
+                output_mean = []
+                output_majority = []
+                
+                # Determine score range based on judge type
+                if judge_type == "preference_5score":
+                    score_range = (-1, 4)
+                elif judge_type == "preference_score":
+                    score_range = (0, 10)
                 else:
-                    output_switched = list(map(lambda x: get_winner(x) if len(x) > 0 else None, output_switched))
-
-                # Reverse the switched scores and combine with original
-                output_switched_reversed = [reverse_score(score, judge_type) if score is not None else None for score in output_switched]
-
-                print(output)
-                print(output_switched_reversed)
-                print("--------------------------------")
-                # Combine original and reversed scores (double the samples)
-                if judge_type in ["preference_score", "preference_5score"]:
-                    # For numeric scores, average the original and reversed scores
-                    combined_output = []
-                    for orig, rev in zip(output, output_switched_reversed):
-                        if orig is not None and rev is not None:
-                            combined_output.append((orig + rev) / 2)
-                        elif orig is not None:
-                            combined_output.append(orig)
-                        elif rev is not None:
-                            combined_output.append(rev)
+                    score_range = None
+                
+                for samples in all_samples:
+                    if len(samples) > 0:
+                        numeric_samples = [int(s) for s in samples if s != -1 or judge_type != "preference_5score"]
+                        if judge_type == "preference_5score":
+                            numeric_samples = [s for s in numeric_samples if s != -1]  # Filter out -1 for 5score
+                        if len(numeric_samples) > 0:
+                            output_mean.append(sum(numeric_samples) / len(numeric_samples))
+                            output_majority.append(get_numeric_mode(numeric_samples, score_range))
                         else:
-                            combined_output.append(None)
-                    output = combined_output
-                else:
-                    # For categorical scores, extend the list to include both samples
-                    # This effectively doubles the sample size for get_winner calculation
-                    extended_samples = []
-                    orig_texts = [[extract_verdict(r.text) for r in result.outputs] for result in response]
-                    switched_texts = [[extract_verdict(r.text) for r in result.outputs] for result in response_switched]
-                    for orig_samples, switched_samples in zip(orig_texts, switched_texts):
-                        # Filter and reverse each switched sample and combine with original
-                        orig_filtered = filter_valid_responses([s for s in orig_samples if s is not None], judge_type)
-                        switched_filtered = filter_valid_responses([s for s in switched_samples if s is not None], judge_type)
-                        reversed_switched = [reverse_score(sample, judge_type) for sample in switched_filtered]
-                        combined_samples = orig_filtered + reversed_switched
-                        extended_samples.append(combined_samples)
-                    # Recompute winner with doubled samples
-                    output = list(map(lambda x: get_winner(x) if len(x) > 0 else None, extended_samples))
-                print(output)
+                            output_mean.append(None)
+                            output_majority.append(None)
+                    else:
+                        output_mean.append(None)
+                        output_majority.append(None)
+            else:
+                # For categorical scores, majority is the winner
+                output_mean = []
+                output_majority = []
+                for samples in all_samples:
+                    if len(samples) > 0:
+                        winner = get_winner(samples)
+                        output_mean.append(winner)
+                        output_majority.append(winner)
+                    else:
+                        output_mean.append(None)
+                        output_majority.append(None)
 
-            column_name = f"selection_{i+1}_base_{j+1}_judged_preference"
-            dataset = dataset.add_column(column_name, output)
-            # filter out invalid judgements (None's)
-            dataset = dataset.filter(lambda row: row[column_name] is not None)
+            print(f"Combined samples mean: {output_mean[:5]}...")  # Show first 5 for debugging
+            print(f"Combined samples majority: {output_majority[:5]}...")
+            print("--------------------------------")
+
+            column_name_mean = f"selection_{i+1}_base_{j+1}_judged_preference_mean"
+            column_name_majority = f"selection_{i+1}_base_{j+1}_judged_preference_majority"
+            dataset = dataset.add_column(column_name_mean, output_mean)
+            dataset = dataset.add_column(column_name_majority, output_majority)
+            # filter out invalid judgements (None's) - filter based on mean column
+            dataset = dataset.filter(lambda row: row[column_name_mean] is not None)
 
     # Process current vs base comparisons
     for k, current_col in enumerate(current_responses):
@@ -353,19 +393,15 @@ def judge(
             )
             response = llm.generate(prompts, sampling_params)
 
-            # add to dataset
-            output = list(map(lambda x: [r.text for r in x.outputs], response))    # Get responses
-            output = list(map(lambda x: [r for r in x if r is not None], output))  # Filter out None's
-            output = list(map(lambda x: [extract_verdict(r) for r in x], output))  # Get verdict from json
-            output = list(map(lambda x: filter_valid_responses(x, judge_type), output))  # Filter invalid responses
-
-            if judge_type in ["preference_score", "preference_5score"]:
-                output = list(map(lambda x: [int(r) for r in x], output))
-                if judge_type == "preference_5score":
-                    output = list(map(lambda x: [r for r in x if r != -1], output))  # Filter out -1 values for 5score
-                output = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output))  # Average the scored preferences
-            else:
-                output = list(map(lambda x: get_winner(x) if len(x) > 0 else None, output))  # Pick most common answer
+            # Collect all samples (original + switched if enabled)
+            all_samples = []
+            
+            # Process original responses
+            orig_texts = [[extract_verdict(r.text) for r in result.outputs] for result in response]
+            for orig_samples in orig_texts:
+                # Filter valid responses
+                orig_filtered = filter_valid_responses([s for s in orig_samples if s is not None], judge_type)
+                all_samples.append(orig_filtered)
 
             # If switch_position is enabled, also collect preferences in reversed direction
             if switch_position:
@@ -386,61 +422,66 @@ def judge(
                 # Generate switched responses
                 response_switched = llm.generate(prompts_switched, sampling_params)
                 
-                # Process switched responses
-                output_switched = list(map(lambda x: [r.text for r in x.outputs], response_switched))    # Get responses
-                output_switched = list(map(lambda x: [r for r in x if r is not None], output_switched))
-                output_switched = list(map(lambda x: [extract_verdict(r) for r in x], output_switched))  # Get verdict from json
-                output_switched = list(map(lambda x: filter_valid_responses(x, judge_type), output_switched))
+                # Process switched responses and combine with original
+                switched_texts = [[extract_verdict(r.text) for r in result.outputs] for result in response_switched]
+                for idx, switched_samples in enumerate(switched_texts):
+                    # Filter and reverse each switched sample
+                    switched_filtered = filter_valid_responses([s for s in switched_samples if s is not None], judge_type)
+                    reversed_switched = [reverse_score(sample, judge_type) for sample in switched_filtered]
+                    # Combine with original samples
+                    all_samples[idx].extend(reversed_switched)
 
-                if judge_type in ["preference_score", "preference_5score"]:
-                    output_switched = list(map(lambda x: [int(r) for r in x], output_switched))
-                    if judge_type == "preference_5score":
-                        output_switched = list(map(lambda x: [r for r in x if r != -1], output_switched))  # Filter out -1 values for 5score
-                    output_switched = list(map(lambda x: sum(x) / len(x) if len(x) > 0 else None, output_switched))
+            # Now calculate mean and majority from all combined samples
+            if judge_type in ["preference_score", "preference_5score"]:
+                # For numeric scores, calculate both mean and majority
+                output_mean = []
+                output_majority = []
+                
+                # Determine score range based on judge type
+                if judge_type == "preference_5score":
+                    score_range = (-1, 4)
+                elif judge_type == "preference_score":
+                    score_range = (0, 10)
                 else:
-                    output_switched = list(map(lambda x: get_winner(x) if len(x) > 0 else None, output_switched))
-
-                # Reverse the switched scores and combine with original
-                output_switched_reversed = [reverse_score(score, judge_type) if score is not None else None for score in output_switched]
-
-                print(output)
-                print(output_switched_reversed)
-                print("--------------------------------")
-                # Combine original and reversed scores (double the samples)
-                if judge_type in ["preference_score", "preference_5score"]:
-                    # For numeric scores, average the original and reversed scores
-                    combined_output = []
-                    for orig, rev in zip(output, output_switched_reversed):
-                        if orig is not None and rev is not None:
-                            combined_output.append((orig + rev) / 2)
-                        elif orig is not None:
-                            combined_output.append(orig)
-                        elif rev is not None:
-                            combined_output.append(rev)
+                    score_range = None
+                
+                for samples in all_samples:
+                    if len(samples) > 0:
+                        numeric_samples = [int(s) for s in samples if s != -1 or judge_type != "preference_5score"]
+                        if judge_type == "preference_5score":
+                            numeric_samples = [s for s in numeric_samples if s != -1]  # Filter out -1 for 5score
+                        if len(numeric_samples) > 0:
+                            output_mean.append(sum(numeric_samples) / len(numeric_samples))
+                            output_majority.append(get_numeric_mode(numeric_samples, score_range))
                         else:
-                            combined_output.append(None)
-                    output = combined_output
-                else:
-                    # For categorical scores, extend the list to include both samples
-                    # This effectively doubles the sample size for get_winner calculation
-                    extended_samples = []
-                    orig_texts = [[extract_verdict(r.text) for r in result.outputs] for result in response]
-                    switched_texts = [[extract_verdict(r.text) for r in result.outputs] for result in response_switched]
-                    for orig_samples, switched_samples in zip(orig_texts, switched_texts):
-                        # Filter and reverse each switched sample and combine with original
-                        orig_filtered = filter_valid_responses([s for s in orig_samples if s is not None], judge_type)
-                        switched_filtered = filter_valid_responses([s for s in switched_samples if s is not None], judge_type)
-                        reversed_switched = [reverse_score(sample, judge_type) for sample in switched_filtered]
-                        combined_samples = orig_filtered + reversed_switched
-                        extended_samples.append(combined_samples)
-                    # Recompute winner with doubled samples
-                    output = list(map(lambda x: get_winner(x) if len(x) > 0 else None, extended_samples))
-                print(output)
+                            output_mean.append(None)
+                            output_majority.append(None)
+                    else:
+                        output_mean.append(None)
+                        output_majority.append(None)
+            else:
+                # For categorical scores, majority is the winner
+                output_mean = []
+                output_majority = []
+                for samples in all_samples:
+                    if len(samples) > 0:
+                        winner = get_winner(samples)
+                        output_mean.append(winner)
+                        output_majority.append(winner)
+                    else:
+                        output_mean.append(None)
+                        output_majority.append(None)
 
-            column_name = f"current_{k+1}_base_{j+1}_judged_preference"
-            dataset = dataset.add_column(column_name, output)
-            # filter out invalid judgements (None's)
-            dataset = dataset.filter(lambda row: row[column_name] is not None)
+            print(f"Combined samples mean: {output_mean[:5]}...")  # Show first 5 for debugging
+            print(f"Combined samples majority: {output_majority[:5]}...")
+            print("--------------------------------")
+
+            column_name_mean = f"current_{k+1}_base_{j+1}_judged_preference_mean"
+            column_name_majority = f"current_{k+1}_base_{j+1}_judged_preference_majority"
+            dataset = dataset.add_column(column_name_mean, output_mean)
+            dataset = dataset.add_column(column_name_majority, output_majority)
+            # filter out invalid judgements (None's) - filter based on mean column
+            dataset = dataset.filter(lambda row: row[column_name_mean] is not None)
 
     # Group by prompt and merge the judged preference columns
     merged_data = {}
@@ -450,11 +491,13 @@ def judge(
     # Selection vs base preferences
     for i in range(selection_pairs):
         for j in range(base_pairs):
-            all_preference_columns.append(f'selection_{i+1}_base_{j+1}_judged_preference')
+            all_preference_columns.append(f'selection_{i+1}_base_{j+1}_judged_preference_mean')
+            all_preference_columns.append(f'selection_{i+1}_base_{j+1}_judged_preference_majority')
     # Current vs base preferences  
     for k in range(current_pairs):
         for j in range(base_pairs):
-            all_preference_columns.append(f'current_{k+1}_base_{j+1}_judged_preference')
+            all_preference_columns.append(f'current_{k+1}_base_{j+1}_judged_preference_mean')
+            all_preference_columns.append(f'current_{k+1}_base_{j+1}_judged_preference_majority')
     
     for row in dataset:
         prompt = row['prompt']
@@ -481,7 +524,6 @@ def judge(
 
 def main():
     # init
-    st = time.time()
     args = parse_arguments()
 
     # prompt template
@@ -502,6 +544,7 @@ def main():
 
     # dataset
     dataset = load_dataset(args.input_repo, split='train')
+    dataset = dataset.select(range(2))
     
     # Split requirements and create new rows
     expanded_data = []
@@ -537,7 +580,8 @@ def main():
         model=args.judge_model,
         tensor_parallel_size=args.world_size,
     )
-
+    
+    st = time.time()
     dataset = judge(
         llm,
         tokenizer,
@@ -571,7 +615,8 @@ def main():
     # print(f'Pearson correlation: {pearson_r}')
 
     # import pdb; pdb.set_trace()
-    dataset.push_to_hub('zjhhhh/' + f'{args.judge_model.replace("/", "_")}_temp_{args.temperature}_maxtok_{args.max_tokens}')
+    # dataset.push_to_hub('zjhhhh/' + f'{args.judge_model.replace("/", "_")}_temp_{args.temperature}_maxtok_{args.max_tokens}')
+    dataset.push_to_hub('MisDrifter/trytrytry')
     print(f'time taken: {time.time() - st}')
 
 
