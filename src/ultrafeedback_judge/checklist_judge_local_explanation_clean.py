@@ -138,13 +138,13 @@ def is_valid_response(response, judge_type):
     elif judge_type == "preference_5score":
         try:
             score = int(response)
-            return -1 <= score <= 4
+            return 0 <= score <= 4
         except:
             return False
     elif judge_type == "preference_5score_ver2":
         try:
             score = int(response)
-            return -3 <= score <= 2
+            return -2 <= score <= 2
         except:
             return False
     else:
