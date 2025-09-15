@@ -8,7 +8,7 @@ from typing import List, Literal
 
 import numpy as np
 import torch
-from datasets import load_from_disk
+from datasets import load_from_disk, Dataset
 from pydantic import BaseModel, Field
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
@@ -142,16 +142,30 @@ def get_message(instruction: str):
     return [{"role": "user", "content": instruction}]
 
 
-def majority_numeric(ints):
-    """Return majority of a numeric list; if tie among modes, return mean of tied values.
-    Expects a non-empty list of ints. Returns int when unique mode; float when tie-averaged.
+def get_numeric_mode(values, score_range=None):
     """
-    counts = Counter(ints)
+    Get the mode (most frequent value) from a list of numeric values.
+    If multiple modes exist, return the mean of the tied modes.
+    """
+    if not values:
+        return None
+
+    # Convert to ints and optionally filter by a valid range
+    if score_range is not None:
+        min_s, max_s = score_range
+        values = [int(v) for v in values if min_s <= int(v) <= max_s]
+    else:
+        values = [int(v) for v in values]
+
+    if not values:
+        return None
+
+    counts = Counter(values)
     max_c = max(counts.values())
     modes = [k for k, c in counts.items() if c == max_c]
     if len(modes) == 1:
-        return int(modes[0])
-    # Average of tied modes
+        return modes[0]
+    # mean tie-break among tied modes
     return float(sum(modes) / len(modes))
 
 
@@ -182,6 +196,10 @@ def parse_args():
 
     parser.add_argument("--output_dir", type=str, default="./outputs",
                         help="Directory to write JSONL results; one row per prompt with 10 scores")
+    parser.add_argument("--push_to_hub", action="store_true", default=False,
+                        help="If set, also pushes the output rows to Hugging Face Hub as a dataset")
+    parser.add_argument("--hf_repo_template", type=str, default="zjhhhh/subsampling_{shard_idx}",
+                        help="Template for target HF repo id. {shard_idx} will be replaced with the shard index.")
     return parser.parse_args()
 
 
@@ -224,6 +242,9 @@ def main():
             raise ValueError(
                 f"Missing required column '{col}' in shard dataset. Available columns: {ds.column_names}")
 
+    if "requirements" not in ds.column_names:
+        raise ValueError("Input shard is missing 'requirements' column needed to extract checks per prompt.")
+
     # Load model
     tokenizer = AutoTokenizer.from_pretrained(args.judge_model)
     llm = LLM(
@@ -243,19 +264,56 @@ def main():
         guided_decoding=guided_decoding,
     )
 
-    # Pre-allocate result holders for each pair
-    # We'll fill per pair with length-n_rows lists for both mean and majority
+    # Expand each row by splitting its requirements into per-check rows.
+    # Keep track of mapping back to the original row via 'orig_index'.
+    expanded = []
+    for orig_idx in range(n_rows):
+        row = ds[orig_idx]
+        req_str = row["requirements"]
+        counter = 1
+        chunks: List[str] = []
+        while len(req_str) > 0:
+            assert req_str.startswith(f"{counter})"), (
+                f"Malformed requirements format at row {orig_idx}: expected prefix '{counter})' but got: {req_str[:20]}...")
+            marker = f"/100)\n{counter+1})"
+            pos = req_str.find(marker)
+            if pos > 0:
+                curr = req_str[len(f"{counter})"): pos + len("/100)\n")]
+            else:
+                curr = req_str[len(f"{counter})"):]
+            chunks.append(curr)
+            # advance
+            req_str = req_str[len(curr) + len(f"{counter})"):]
+            counter += 1
+        # normalize
+        chunks = [c.strip() for c in chunks]
+
+        for c in chunks:
+            new_row = {k: row[k] for k in ds.column_names}
+            new_row["check"] = c.split("(importance:")[0].strip()
+            try:
+                new_row["importance"] = int(c.split("(importance:")[1].split("/")[0].strip())
+            except Exception:
+                new_row["importance"] = None
+            new_row["orig_index"] = orig_idx
+            expanded.append(new_row)
+
+    eds: Dataset = Dataset.from_list(expanded)
+    n_expanded = len(eds)
+    print(f"Expanded to {n_expanded} check-rows across {n_rows} prompts")
+
+    # Pre-allocate result holders for each pair over expanded rows
     pair_results = {}
 
     # Helper to run a batch of prompts and reduce to per-row score
     def run_pair_and_reduce(resp_a_list: List[str], resp_b_list: List[str], label: str):
         prompts = []
-        for row_idx in range(n_rows):
-            row = ds[row_idx]
+        for row_idx in range(n_expanded):
+            row = eds[row_idx]
             prompt = row["prompt"]
             resp_a = resp_a_list[row_idx]
             resp_b = resp_b_list[row_idx]
-            check_val = row.get("check", "")  # Some templates include {check}
+            check_val = row.get("check", "")
             filled = prompt_template.format(
                 prompt=prompt,
                 response_a=resp_a,
@@ -276,30 +334,39 @@ def main():
             vals = filter_valid_responses(vals, args.judge_type)
             verdict_lists.append(vals)
 
-        if args.judge_type in ["preference_score", "preference_5score"]:
-            reduced_mean = []
-            reduced_majority = []
+        if args.judge_type in ["preference_score", "preference_5score", "reward"]:
+            # Compute per-row stats on original direction only for now
+            orig_mean = []
+            orig_majority = []
             for vals in verdict_lists:
-                # Convert to ints and filter -1 for 5score
-                ints = [int(v) for v in vals]
-                if args.judge_type == "preference_5score":
-                    ints = [v for v in ints if v != -1]
-                if len(ints) == 0:
-                    reduced_mean.append(None)
-                    reduced_majority.append(None)
+                if len(vals) == 0:
+                    orig_mean.append(None)
+                    orig_majority.append(None)
                 else:
-                    reduced_mean.append(float(np.mean(ints)))
-                    reduced_majority.append(majority_numeric(ints))
+                    ints = [int(v) for v in vals]
+                    orig_mean.append(float(np.mean(ints)))
+                    if args.judge_type == "preference_5score":
+                        score_range = (-1, 4)
+                    elif args.judge_type == "preference_score":
+                        score_range = (0, 10)
+                    elif args.judge_type == "reward":
+                        score_range = (0, 100)
+                    else:
+                        score_range = None
+                    orig_majority.append(get_numeric_mode(vals, score_range))
+            reduced_mean = orig_mean
+            reduced_majority = orig_majority
         else:
-            # Categorical preference: we only define majority via get_winner; mean is not applicable
-            reduced_majority = [get_winner(vals) if len(vals) > 0 else None for vals in verdict_lists]
-            reduced_mean = [None for _ in range(n_rows)]
+            # Categorical preference: winner is used for both mean and majority to mirror reference behavior
+            winners = [get_winner(vals) if len(vals) > 0 else None for vals in verdict_lists]
+            reduced_majority = winners
+            reduced_mean = winners
 
         if args.switch_position:
             # Also judge reversed A/B and combine
             prompts_sw = []
-            for row_idx in range(n_rows):
-                row = ds[row_idx]
+            for row_idx in range(n_expanded):
+                row = eds[row_idx]
                 prompt = row["prompt"]
                 resp_a = resp_b_list[row_idx]
                 resp_b = resp_a_list[row_idx]
@@ -322,47 +389,84 @@ def main():
                 vals = filter_valid_responses(vals, args.judge_type)
                 verdict_lists_sw.append(vals)
 
-            if args.judge_type in ["preference_score", "preference_5score"]:
-                # Build combined lists of ints per row, then compute both mean and majority
-                combined_int_lists = []
-                for orig_vals, sw_vals in zip(verdict_lists, verdict_lists_sw):
-                    ints = [int(v) for v in orig_vals]
-                    sw_ints = [int(v) for v in sw_vals]
-                    if args.judge_type == "preference_5score":
-                        ints = [v for v in ints if v != -1]
-                        sw_ints = [v for v in sw_ints if v != -1]
-                    # Reverse switch scores for positional bias
-                    sw_ints = [reverse_score(v, args.judge_type) for v in sw_ints]
-                    combined_int_lists.append(ints + sw_ints)
+            if args.judge_type in ["preference_score", "preference_5score", "reward"]:
+                # Compute stats on reversed direction separately, then average with original
+                sw_mean = []
+                sw_majority = []
+                for sw_vals in verdict_lists_sw:
+                    if len(sw_vals) == 0:
+                        sw_mean.append(None)
+                        sw_majority.append(None)
+                    else:
+                        sw_ints = [int(v) for v in sw_vals]
+                        # Reverse switch scores for positional bias
+                        sw_ints = [reverse_score(v, args.judge_type) for v in sw_ints]
+                        sw_mean.append(float(np.mean(sw_ints)))
+                        if args.judge_type == "preference_5score":
+                            score_range = (-1, 4)
+                        elif args.judge_type == "preference_score":
+                            score_range = (0, 10)
+                        elif args.judge_type == "reward":
+                            score_range = (0, 100)
+                        else:
+                            score_range = None
+                        sw_majority.append(get_numeric_mode(sw_ints, score_range))
 
+                # Average original and reversed statistics per row
                 new_mean = []
                 new_majority = []
-                for ints in combined_int_lists:
-                    if len(ints) == 0:
+                for om, sm, oj, sj in zip(reduced_mean, sw_mean, reduced_majority, sw_majority):
+                    # Mean
+                    if om is None and sm is None:
                         new_mean.append(None)
-                        new_majority.append(None)
+                    elif om is None:
+                        new_mean.append(sm)
+                    elif sm is None:
+                        new_mean.append(om)
                     else:
-                        new_mean.append(float(np.mean(ints)))
-                        new_majority.append(majority_numeric(ints))
+                        new_mean.append(0.5 * (om + sm))
+                    # Majority (numeric) with mean tie-break already baked in per side; average the two sides
+                    if oj is None and sj is None:
+                        new_majority.append(None)
+                    elif oj is None:
+                        new_majority.append(sj)
+                    elif sj is None:
+                        new_majority.append(oj)
+                    else:
+                        new_majority.append(0.5 * (float(oj) + float(sj)))
 
                 reduced_mean = new_mean
                 reduced_majority = new_majority
             else:
-                # Categorical: recompute winner on doubled sample lists
-                combined_samples = []
-                for vals_a, vals_b in zip(verdict_lists, verdict_lists_sw):
+                # Categorical: compute winner on original and reversed separately, then combine:
+                # if both present and equal -> keep; if only one present -> keep that; else -> Tie
+                winners_orig = [get_winner(vals) if len(vals) > 0 else None for vals in verdict_lists]
+                winners_sw = []
+                for vals_b in verdict_lists_sw:
                     rb = [reverse_score(v, args.judge_type) for v in vals_b]
-                    combined_samples.append(vals_a + rb)
-                reduced_majority = [get_winner(vals) if len(vals) > 0 else None for vals in combined_samples]
-                reduced_mean = [None for _ in range(n_rows)]
+                    winners_sw.append(get_winner(rb) if len(rb) > 0 else None)
+
+                winners_final = []
+                for wo, ws in zip(winners_orig, winners_sw):
+                    if wo is None and ws is None:
+                        winners_final.append(None)
+                    elif wo is None:
+                        winners_final.append(ws)
+                    elif ws is None:
+                        winners_final.append(wo)
+                    else:
+                        winners_final.append(wo if wo == ws else "Tie")
+
+                reduced_majority = winners_final
+                reduced_mean = winners_final
 
         pair_results[label + "_mean"] = reduced_mean
         pair_results[label + "_majority"] = reduced_majority
 
-    # Prepare lists of response strings per row for each column group
-    sel_lists = {col: [ds[i][col] for i in range(n_rows)] for col in selection_cols}
-    base_lists = {col: [ds[i][col] for i in range(n_rows)] for col in base_cols}
-    cur_lists = {col: [ds[i][col] for i in range(n_rows)] for col in current_cols}
+    # Prepare lists of response strings per expanded row
+    sel_lists = {col: [eds[i][col] for i in range(n_expanded)] for col in selection_cols}
+    base_lists = {col: [eds[i][col] for i in range(n_expanded)] for col in base_cols}
+    cur_lists = {col: [eds[i][col] for i in range(n_expanded)] for col in current_cols}
 
     # Run selection vs base (3x2=6)
     for i, sel_col in enumerate(selection_cols, start=1):
@@ -376,7 +480,7 @@ def main():
             label = f"current_{k}_base_{j}_score"
             run_pair_and_reduce(cur_lists[cur_col], base_lists[base_col], label)
 
-    # Assemble output rows: prompt + 10 scores
+    # Assemble output rows: original columns + 20 score vectors (mean/majority per pair)
     base_labels = [
         "selection_1_base_1_score",
         "selection_1_base_2_score",
@@ -392,15 +496,44 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
     out_path = os.path.join(args.output_dir, f"shard_{args.idx:05d}_scores.jsonl")
+    out_rows = []
     with open(out_path, "w") as f:
-        for row_idx in range(n_rows):
-            row = {"prompt": ds[row_idx]["prompt"]}
+        # Build mapping from orig_index -> list of expanded indices in order
+        idx_map = {}
+        for i in range(n_expanded):
+            oi = eds[i]["orig_index"]
+            idx_map.setdefault(oi, []).append(i)
+
+        for oi in range(n_rows):
+            # Start with all original columns
+            base_row = {k: ds[oi][k] for k in ds.column_names}
+            # For each pair key, collect vector over the checks of this prompt
             for key in base_labels:
-                row[key.replace("_score", "_mean")] = pair_results.get(key + "_mean", [None] * n_rows)[row_idx]
-                row[key.replace("_score", "_majority")] = pair_results.get(key + "_majority", [None] * n_rows)[row_idx]
-            f.write(json.dumps(row) + "\n")
+                mean_list = []
+                maj_list = []
+                mean_vals = pair_results.get(key + "_mean", [])
+                maj_vals = pair_results.get(key + "_majority", [])
+                for exp_i in idx_map.get(oi, []):
+                    mean_list.append(mean_vals[exp_i] if exp_i < len(mean_vals) else None)
+                    maj_list.append(maj_vals[exp_i] if exp_i < len(maj_vals) else None)
+                base_row[key.replace("_score", "_mean")] = mean_list
+                base_row[key.replace("_score", "_majority")] = maj_list
+
+            f.write(json.dumps(base_row) + "\n")
+            out_rows.append(base_row)
 
     print(f"Wrote {n_rows} rows -> {out_path}")
+
+    if args.push_to_hub:
+        try:
+            repo_id = args.hf_repo_template.format(shard_idx=args.idx)
+            print(f"Pushing to HF Hub: {repo_id}")
+            ds_out = Dataset.from_list(out_rows)
+            ds_out.push_to_hub(repo_id)
+            print(f"Pushed dataset to hub: {repo_id}")
+        except Exception as e:
+            print(f"Failed to push to Hugging Face Hub: {e}")
+
     print(f"Time taken: {time.time() - st:.2f}s")
 
 
