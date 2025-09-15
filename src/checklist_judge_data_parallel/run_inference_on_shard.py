@@ -344,15 +344,24 @@ def main():
                     orig_majority.append(None)
                 else:
                     ints = [int(v) for v in vals]
-                    orig_mean.append(float(np.mean(ints)))
+                    # For 5-score preference, filter out -1 (missing/invalid) when computing stats
                     if args.judge_type == "preference_5score":
-                        score_range = (-1, 4)
-                    elif args.judge_type == "preference_score":
-                        score_range = (0, 10)
-                    elif args.judge_type == "reward":
-                        score_range = (0, 100)
+                        ints_no_missing = [x for x in ints if x != -1]
+                        # Mean over non-missing only
+                        if len(ints_no_missing) == 0:
+                            orig_mean.append(None)
+                        else:
+                            orig_mean.append(float(np.mean(ints_no_missing)))
+                        # Exclude -1 from majority by restricting range to 0..4
+                        score_range = (0, 4)
                     else:
-                        score_range = None
+                        orig_mean.append(float(np.mean(ints)))
+                        if args.judge_type == "preference_score":
+                            score_range = (0, 10)
+                        elif args.judge_type == "reward":
+                            score_range = (0, 100)
+                        else:
+                            score_range = None
                     orig_majority.append(get_numeric_mode(vals, score_range))
             reduced_mean = orig_mean
             reduced_majority = orig_majority
@@ -401,16 +410,24 @@ def main():
                         sw_ints = [int(v) for v in sw_vals]
                         # Reverse switch scores for positional bias
                         sw_ints = [reverse_score(v, args.judge_type) for v in sw_ints]
-                        sw_mean.append(float(np.mean(sw_ints)))
                         if args.judge_type == "preference_5score":
-                            score_range = (-1, 4)
-                        elif args.judge_type == "preference_score":
-                            score_range = (0, 10)
-                        elif args.judge_type == "reward":
-                            score_range = (0, 100)
+                            # Filter out -1 when computing mean and majority
+                            sw_no_missing = [x for x in sw_ints if x != -1]
+                            if len(sw_no_missing) == 0:
+                                sw_mean.append(None)
+                            else:
+                                sw_mean.append(float(np.mean(sw_no_missing)))
+                            score_range = (0, 4)
+                            sw_majority.append(get_numeric_mode(sw_no_missing, score_range))
                         else:
-                            score_range = None
-                        sw_majority.append(get_numeric_mode(sw_ints, score_range))
+                            sw_mean.append(float(np.mean(sw_ints)))
+                            if args.judge_type == "preference_score":
+                                score_range = (0, 10)
+                            elif args.judge_type == "reward":
+                                score_range = (0, 100)
+                            else:
+                                score_range = None
+                            sw_majority.append(get_numeric_mode(sw_ints, score_range))
 
                 # Average original and reversed statistics per row
                 new_mean = []
