@@ -153,6 +153,95 @@ def flatten_arrays(arrays):
     return flattened
 
 
+def compute_l2_loss(x_data, y_data, method='flattened'):
+    """
+    Compute L2 loss (Mean Squared Error) between two datasets.
+    
+    Args:
+        x_data: List of arrays (human annotations)
+        y_data: List of arrays (judge preferences)
+        method: 'flattened' (concatenate all arrays) or 'average' (compute loss for each array pair, then average)
+    
+    Returns:
+        l2_loss: L2 loss value
+        mse: Mean squared error (same as L2 loss)
+    """
+    print(f"\nComputing L2 loss using method: {method}")
+    print(f"X data: {len(x_data)} arrays")
+    print(f"Y data: {len(y_data)} arrays")
+    
+    if len(x_data) != len(y_data):
+        print(f"Warning: Mismatched number of arrays. X: {len(x_data)}, Y: {len(y_data)}")
+        min_len = min(len(x_data), len(y_data))
+        x_data = x_data[:min_len]
+        y_data = y_data[:min_len]
+        print(f"Using first {min_len} arrays from each dataset")
+    
+    if method == 'flattened':
+        # Flatten all arrays into single lists
+        x_flat = flatten_arrays(x_data)
+        y_flat = flatten_arrays(y_data)
+        
+        print(f"Flattened X: {len(x_flat)} values")
+        print(f"Flattened Y: {len(y_flat)} values")
+        
+        if len(x_flat) != len(y_flat):
+            print(f"Warning: Different number of values after flattening")
+            min_len = min(len(x_flat), len(y_flat))
+            x_flat = x_flat[:min_len]
+            y_flat = y_flat[:min_len]
+            print(f"Using first {min_len} values from each")
+        
+        # Compute L2 loss (MSE)
+        x_array = np.array(x_flat)
+        y_array = np.array(y_flat)
+        squared_errors = (x_array - y_array) ** 2
+        l2_loss = np.mean(squared_errors)
+        
+        print(f"\nFlattened data L2 loss:")
+        print(f"X values (first 10): {x_flat[:10]}")
+        print(f"Y values (first 10): {y_flat[:10]}")
+        print(f"Squared errors (first 10): {squared_errors[:10]}")
+        
+    elif method == 'average':
+        # Compute L2 loss for each array pair, then average the losses
+        losses = []
+        
+        print(f"\nComputing L2 loss for each array pair:")
+        
+        for i, (x_arr, y_arr) in enumerate(zip(x_data, y_data)):
+            # Ensure arrays have same length
+            min_len = min(len(x_arr), len(y_arr))
+            if min_len < 1:
+                print(f"  Array pair {i}: Skipping (no data points)")
+                continue
+                
+            x_trimmed = np.array(x_arr[:min_len])
+            y_trimmed = np.array(y_arr[:min_len])
+            
+            try:
+                squared_errors = (x_trimmed - y_trimmed) ** 2
+                mse = np.mean(squared_errors)
+                losses.append(mse)
+                print(f"  Array pair {i}: L2 loss={mse:.4f} | X={x_trimmed} | Y={y_trimmed}")
+            except Exception as e:
+                print(f"  Array pair {i}: Error computing L2 loss: {e}")
+                continue
+        
+        if not losses:
+            print("No valid L2 losses computed!")
+            return np.nan, np.nan
+        
+        # Average the losses
+        l2_loss = np.mean(losses)
+        
+        print(f"\nIndividual L2 losses: {[f'{loss:.4f}' for loss in losses]}")
+        print(f"Average L2 loss: {l2_loss:.4f}")
+        print(f"Valid array pairs: {len(losses)}/{len(x_data)}")
+    
+    return l2_loss, l2_loss  # Return same value twice for consistency with correlation function
+
+
 def compute_pearson_correlation(x_data, y_data, method='flattened'):
     """
     Compute Pearson correlation coefficient between two datasets.
@@ -236,6 +325,40 @@ def compute_pearson_correlation(x_data, y_data, method='flattened'):
     return correlation, p_value
 
 
+def compute_l2_loss_matrix(datasets_data, labels, method='flattened'):
+    """
+    Compute L2 loss matrix between multiple datasets.
+    
+    Args:
+        datasets_data: List of datasets [X, Y, Z, W, ...]
+        labels: List of labels ['X', 'Y', 'Z', 'W', ...]
+        method: L2 loss method
+    
+    Returns:
+        l2_loss_matrix: DataFrame with L2 loss values
+    """
+    n_datasets = len(datasets_data)
+    l2_matrix = np.zeros((n_datasets, n_datasets))
+    
+    print(f"\nComputing {n_datasets}x{n_datasets} L2 loss matrix using method: {method}")
+    
+    for i in range(n_datasets):
+        for j in range(n_datasets):
+            if i == j:
+                # Diagonal elements (self-loss should be 0)
+                l2_matrix[i, j] = 0.0
+            else:
+                # Compute L2 loss between datasets i and j
+                l2_loss, _ = compute_l2_loss(datasets_data[i], datasets_data[j], method)
+                l2_matrix[i, j] = l2_loss
+                print(f"  {labels[i]} vs {labels[j]}: L2 loss={l2_loss:.4f}")
+    
+    # Create DataFrame for better visualization
+    l2_df = pd.DataFrame(l2_matrix, index=labels, columns=labels)
+    
+    return l2_df
+
+
 def compute_correlation_matrix(datasets_data, labels, method='flattened'):
     """
     Compute correlation matrix between multiple datasets.
@@ -273,6 +396,38 @@ def compute_correlation_matrix(datasets_data, labels, method='flattened'):
     p_df = pd.DataFrame(p_matrix, index=labels, columns=labels)
     
     return corr_df, p_df
+
+
+def plot_l2_loss_heatmap(l2_matrix, method, save_path=None):
+    """
+    Plot L2 loss matrix as heatmap.
+    
+    Args:
+        l2_matrix: DataFrame with L2 loss values
+        method: Method used for L2 loss computation
+        save_path: Optional path to save the plot
+    """
+    # Set up the matplotlib figure
+    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+    
+    # Plot L2 loss heatmap
+    mask = np.zeros_like(l2_matrix, dtype=bool)
+    mask[np.triu_indices_from(mask, k=1)] = True  # Mask upper triangle
+    
+    sns.heatmap(l2_matrix, mask=mask, annot=True, fmt='.4f', 
+                cmap='viridis', square=True, ax=ax,
+                cbar_kws={"shrink": .8, "label": "L2 Loss"})
+    ax.set_title(f'L2 Loss Matrix ({method.title()} Method)', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Datasets', fontweight='bold')
+    ax.set_ylabel('Datasets', fontweight='bold')
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"L2 loss heatmap saved to: {save_path}")
+    
+    plt.show()
 
 
 def plot_correlation_heatmap(corr_matrix, p_matrix, method, save_path=None):
@@ -341,7 +496,7 @@ def plot_correlation_heatmap(corr_matrix, p_matrix, method, save_path=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compute Pearson correlation matrix between annotations")
+    parser = argparse.ArgumentParser(description="Compute Pearson correlation matrix and/or L2 loss matrix between annotations")
     parser.add_argument("--human-file", default="src/ultrafeedback_judge/human_annotation.txt",
                        help="Path to human annotation file")
     parser.add_argument("--datasets", nargs='+', 
@@ -361,6 +516,10 @@ def main():
                        help="Measure to use for preference")
     parser.add_argument("--reward", type=int, choices=[0, 1, 2], default=0,
                        help="Reward mode: 0=no use, 1=use r_0-r_1, 2=use Bradley-Terry e(r_0)/(e(r_0)+e(r_1))")
+    parser.add_argument("--compute-l2-loss", action='store_true',
+                       help="Compute L2 loss matrix in addition to correlation matrix")
+    parser.add_argument("--l2-only", action='store_true',
+                       help="Compute only L2 loss matrix (skip correlation analysis)")
     args = parser.parse_args()
     
     # Ensure we have labels for all datasets
@@ -408,48 +567,79 @@ def main():
         print(f"Truncating all datasets to {min_len} arrays")
         all_datasets = [dataset[:min_len] for dataset in all_datasets]
     
-    # Compute correlation matrices
-    print(f"\n3. Computing Pearson correlation matrix")
+    # Compute L2 loss matrices if requested
+    if args.compute_l2_loss or args.l2_only:
+        print(f"\n3. Computing L2 loss matrix")
+        
+        if args.method in ['flattened', 'both']:
+            l2_matrix = compute_l2_loss_matrix(all_datasets, all_labels, 'flattened')
+            print(f"\n📊 FLATTENED METHOD L2 LOSS MATRIX:")
+            print("L2 Loss Values:")
+            print(l2_matrix.round(4))
+            
+            # Generate heatmap for flattened method L2 loss
+            if args.plot:
+                save_path = None
+                if args.save_plot:
+                    save_path = args.save_plot.replace('.png', '_l2_loss_flattened.png')
+                plot_l2_loss_heatmap(l2_matrix, 'flattened', save_path)
+        
+        if args.method in ['average', 'both']:
+            l2_matrix = compute_l2_loss_matrix(all_datasets, all_labels, 'average')
+            print(f"\n📊 AVERAGE METHOD L2 LOSS MATRIX:")
+            print("L2 Loss Values:")
+            print(l2_matrix.round(4))
+            
+            # Generate heatmap for average method L2 loss
+            if args.plot:
+                save_path = None
+                if args.save_plot:
+                    save_path = args.save_plot.replace('.png', '_l2_loss_average.png')
+                plot_l2_loss_heatmap(l2_matrix, 'average', save_path)
     
-    if args.method in ['flattened', 'both']:
-        corr_matrix, p_matrix = compute_correlation_matrix(all_datasets, all_labels, 'flattened')
-        print(f"\n📊 FLATTENED METHOD CORRELATION MATRIX:")
-        print("Correlation Coefficients:")
-        print(corr_matrix.round(4))
-        print("\nP-values:")
-        print(p_matrix)
+    # Compute correlation matrices (skip if l2-only is specified)
+    if not args.l2_only:
+        print(f"\n{'4' if args.compute_l2_loss else '3'}. Computing Pearson correlation matrix")
         
-        print(f"\nSignificance Matrix (α = 0.05):")
-        significance = (p_matrix < 0.05).astype(str)
-        significance = significance.replace({'True': 'Significant', 'False': 'Not Significant'})
-        print(significance)
+        if args.method in ['flattened', 'both']:
+            corr_matrix, p_matrix = compute_correlation_matrix(all_datasets, all_labels, 'flattened')
+            print(f"\n📊 FLATTENED METHOD CORRELATION MATRIX:")
+            print("Correlation Coefficients:")
+            print(corr_matrix.round(4))
+            print("\nP-values:")
+            print(p_matrix)
+            
+            print(f"\nSignificance Matrix (α = 0.05):")
+            significance = (p_matrix < 0.05).astype(str)
+            significance = significance.replace({'True': 'Significant', 'False': 'Not Significant'})
+            print(significance)
+            
+            # Generate heatmap for flattened method
+            if args.plot:
+                save_path = None
+                if args.save_plot:
+                    save_path = args.save_plot.replace('.png', '_correlation_flattened.png')
+                plot_correlation_heatmap(corr_matrix, p_matrix, 'flattened', save_path)
         
-        # Generate heatmap for flattened method
-        if args.plot:
-            save_path = None
-            if args.save_plot:
-                save_path = args.save_plot.replace('.png', '_flattened.png')
-            plot_correlation_heatmap(corr_matrix, p_matrix, 'flattened', save_path)
-    
-    if args.method in ['average', 'both']:
-        corr_matrix, p_matrix = compute_correlation_matrix(all_datasets, all_labels, 'average')
-        print(f"\n📊 AVERAGE METHOD CORRELATION MATRIX:")
-        print("Correlation Coefficients:")
-        print(corr_matrix.round(4))
-        print("\nP-values:")
-        print(p_matrix)
-        
-        print(f"\nSignificance Matrix (α = 0.05):")
-        significance = (p_matrix < 0.05).astype(str)
-        significance = significance.replace({'True': 'Significant', 'False': 'Not Significant'})
-        print(significance)
-        
-        # Generate heatmap for average method
-        if args.plot:
-            save_path = None
-            if args.save_plot:
-                save_path = args.save_plot.replace('.png', '_average.png')
-            plot_correlation_heatmap(corr_matrix, p_matrix, 'average', save_path)
+        if args.method in ['average', 'both']:
+            corr_matrix, p_matrix = compute_correlation_matrix(all_datasets, all_labels, 'average')
+            print(f"\n📊 AVERAGE METHOD CORRELATION MATRIX:")
+            print("Correlation Coefficients:")
+            print(corr_matrix.round(4))
+            print("\nP-values:")
+            print(p_matrix)
+            
+            print(f"\nSignificance Matrix (α = 0.05):")
+            significance = (p_matrix < 0.05).astype(str)
+            significance = significance.replace({'True': 'Significant', 'False': 'Not Significant'})
+            print(significance)
+            
+            # Generate heatmap for average method
+            if args.plot:
+                save_path = None
+                if args.save_plot:
+                    save_path = args.save_plot.replace('.png', '_correlation_average.png')
+                plot_correlation_heatmap(corr_matrix, p_matrix, 'average', save_path)
 
 
 if __name__ == "__main__":
