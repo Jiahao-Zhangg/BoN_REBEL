@@ -82,26 +82,27 @@ def main():
                 tokenizer_left.add_special_tokens({"pad_token": "[PAD]"})
 
     def compute_qwen_slicing_idx(tok):
-        # Determine how many header tokens precede assistant content for an empty assistant message
-        msgs_empty = get_message(response="")
-        out = tok.apply_chat_template(msgs_empty, tokenize=True, add_generation_prompt=False)
-        if isinstance(out, dict):
-            input_ids = out["input_ids"]
+        """Find the start-of-content offset by aligning raw content tokens inside the templated assistant message."""
+        sample = "__QWEN_SLICE_PROBE__"
+        full = tok.apply_chat_template(get_message(response=sample), tokenize=True, add_generation_prompt=False)
+        if isinstance(full, dict):
+            full_ids = full["input_ids"]
         else:
-            input_ids = out
-        # Prefer <|eot_id|>; fallback to <|im_end|>
-        eot_token = "<|eot_id|>"
-        eot_id = tok.convert_tokens_to_ids(eot_token)
-        if eot_id is None or eot_id == tok.unk_token_id:
-            eot_token = "<|im_end|>"
-            eot_id = tok.convert_tokens_to_ids(eot_token)
-        if eot_id is None or eot_id == tok.unk_token_id:
-            raise RuntimeError("Could not resolve Qwen end-of-turn token id.")
-        try:
-            pos_end = input_ids.index(eot_id)
-        except ValueError:
-            raise RuntimeError("End-of-turn token not found in empty assistant template.")
-        return pos_end
+            full_ids = full
+        content_ids = tok(sample, add_special_tokens=False)["input_ids"]
+
+        # Simple subsequence search
+        def find_subseq(haystack, needle):
+            n, m = len(haystack), len(needle)
+            for i in range(0, n - m + 1):
+                if haystack[i:i+m] == needle:
+                    return i
+            return -1
+
+        pos = find_subseq(full_ids, content_ids)
+        if pos < 0:
+            raise RuntimeError("Failed to locate content within Qwen assistant template; cannot compute slicing index.")
+        return pos
 
     dataset = load_dataset(args.input_repo, split='train')
     
@@ -122,6 +123,7 @@ def main():
     # Compute slicing index for Qwen if applicable
     if "Qwen" in args.model:
         slicing_idx_used = compute_qwen_slicing_idx(tokenizer)
+        print(f'slicing index used: {slicing_idx_used}')
     else:
         slicing_idx_used = args.slicing_idx
     for row in tqdm(dataset):
@@ -212,7 +214,8 @@ def main():
         chosen_reward.append(g_values[chosen_idx_in_z])
         assert len(qwen_chosen_token) == args.maxlen
         if "Qwen" in args.model:
-            # After slicing, content should include end-of-turn marker near end
+            # After slicing, ensure no assistant header at start and end-of-turn marker present
+            assert not chosen_text.lstrip().startswith("<|im_start|>assistant"), "Qwen chosen should not include assistant header"
             assert ("<|eot_id|>" in chosen_text) or ("<|im_end|>" in chosen_text), "Qwen chosen text should include end-of-turn marker"
             last_id = int(qwen_chosen_token[-1])
             pid = tokenizer.pad_token_id
@@ -233,6 +236,7 @@ def main():
         reject_reward.append(g_values[reject_idx_in_z])
         assert len(qwen_reject_token) == args.maxlen
         if "Qwen" in args.model:
+            assert not reject_text.lstrip().startswith("<|im_start|>assistant"), "Qwen reject should not include assistant header"
             assert ("<|eot_id|>" in reject_text) or ("<|im_end|>" in reject_text), "Qwen reject text should include end-of-turn marker"
             last_id = int(qwen_reject_token[-1])
             pid = tokenizer.pad_token_id
@@ -261,7 +265,7 @@ def main():
 
     dataset = dataset.train_test_split(test_size=1000, shuffle=True)
     model_name = args.model.split('/')[-1]
-    dataset.push_to_hub(args.input_repo + '_tokenized')
+    dataset.push_to_hub('zjhhhh/gangdu_tokenized')
 
 
 if __name__ == "__main__":
