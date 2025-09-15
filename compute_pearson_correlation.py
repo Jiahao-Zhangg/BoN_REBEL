@@ -124,7 +124,7 @@ def load_judge_preferences(dataset_name, measure='majority', reward_mode=0):
                     print(f"Row {i}: {pref}")
                 elif 'response_0_1_judged_preference' in row:
                     pref = row['response_0_1_judged_preference']
-                    pref = list(map(lambda x: MAP[x], pref))
+                    # pref = list(map(lambda x: MAP[x], pref))
                     judge_preferences.append(pref)
                     print(f"Row {i}: {pref}")
                 else:

@@ -407,7 +407,7 @@ if __name__ == '__main__':
             writer.add_scalar("objective/sign_align", accelerator.gather(eval_dict["sign_align"]).mean().item(), update)
             if args.output_dir:
                 accelerator.wait_for_everyone()
-                output_dir = os.path.join(args.output_dir, run_name)
+                output_dir = os.path.join(args.output_dir, f"{run_name}_step_{update}")
                 os.makedirs(os.path.dirname(output_dir), exist_ok=True)
                 accelerator.save_state(output_dir=output_dir)
                 accelerator.wait_for_everyone()
@@ -539,7 +539,7 @@ if __name__ == '__main__':
     writer.add_scalar("objective/sign_align", accelerator.gather(eval_dict["sign_align"]).mean().item(), update)
     if args.output_dir:
         accelerator.wait_for_everyone()
-        output_dir = os.path.join(args.output_dir, run_name)
+        output_dir = os.path.join(args.output_dir, f"{run_name}_step_{update}_final")
         os.makedirs(os.path.dirname(output_dir), exist_ok=True)
         accelerator.save_state(output_dir=output_dir)
         accelerator.wait_for_everyone()
