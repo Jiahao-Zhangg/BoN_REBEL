@@ -36,7 +36,7 @@ class REBELHParams:
 
 @dataclass
 class TaskHParams:
-    input_repo: str = None
+    input_repo: str = "zjhhhh/sw_maxlen_8192_mean_maxlenprompt_1024_tokenized"
     """the output repo of filter_tokenize.py"""
     maxlen_prompt: int = 1024
     maxlen: int = 2048
@@ -54,11 +54,11 @@ class Args:
     """seed of the experiment"""
     track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "ultrafeedback"
+    wandb_project_name: str = "checklist"
     """the wandb's project name"""
     run_name: Optional[str] = None
     """a unique name of this run"""
-    print_sample_output_freq: int = 50
+    print_sample_output_freq: int = 20
     """How often to print sample output"""
 
     # optimizer args
@@ -77,13 +77,13 @@ class Args:
     enable_grad_clip: bool = False
     """whether to enable gradient clipping (set to False to just monitor norms first)"""
 
-    gradient_accumulation_steps: int = 64 # used to be 16
+    gradient_accumulation_steps: int = 32 # used to be 16
     """The number of gradient accumulation steps"""
     per_device_train_batch_size: int = 1
     """The micro batch size per GPU (HF's `per_device_train_batch_size`)"""
     per_device_eval_batch_size: int = 1
     """per rank eval batch size"""
-    total_episodes: int = 60000
+    total_episodes: int = 9000
     """The total number of episodes to train"""
 
     # optional args filled while running
@@ -95,7 +95,7 @@ class Args:
     """The batch size per GPU (HF's `per_device_train_batch_size` * `gradient_accumulation_steps`)"""
 
     # other args
-    base_model: str = "meta-llama/Llama-3.2-3B-Instruct"
+    base_model: str = "Qwen/Qwen2.5-3B-Instruct"
     """the name of the pretrained model to use"""
     output_dir: str = None
     """Where to save the model"""
@@ -178,8 +178,8 @@ def gather_all_logprob(args, process_idx, policy, tokenizer, dataset, device):
     with torch.no_grad():
         for i in tqdm(range(start_idx, start_idx + batch_size)):
 
-            chosen_logprob.append(gather_logprob(args, policy, tokenizer, dataset[i]["llama_prompt_tokens"], dataset[i]["llama_chosen_tokens"], device))
-            reject_logprob.append(gather_logprob(args, policy, tokenizer, dataset[i]["llama_prompt_tokens"], dataset[i]["llama_reject_tokens"], device))
+            chosen_logprob.append(gather_logprob(args, policy, tokenizer, dataset[i]["qwen_prompt_tokens"], dataset[i]["qwen_chosen_tokens"], device))
+            reject_logprob.append(gather_logprob(args, policy, tokenizer, dataset[i]["qwen_prompt_tokens"], dataset[i]["qwen_reject_tokens"], device))
             index.append(i)
 
         chosen_logprob = torch.cat(chosen_logprob)
@@ -207,9 +207,9 @@ def evaluate(args, policy, tokenizer, dataloader):
     with torch.no_grad():
         for data in tqdm(dataloader):
             
-            responses = torch.cat((data["llama_chosen_tokens"], data["llama_reject_tokens"]), dim=0)
+            responses = torch.cat((data["qwen_chosen_tokens"], data["qwen_reject_tokens"]), dim=0)
             logprobs = torch.cat((data["chosen_logprob"], data["reject_logprob"]), dim=0)
-            query_responses = torch.cat((torch.cat((data["llama_prompt_tokens"], data["llama_prompt_tokens"]), dim=0), responses), dim=1)
+            query_responses = torch.cat((torch.cat((data["qwen_prompt_tokens"], data["qwen_prompt_tokens"]), dim=0), responses), dim=1)
             sequence_length = first_true_indices(responses == tokenizer.pad_token_id) - 1
             seq_mask = torch.arange(args.task.maxlen, device=device).unsqueeze(0).expand_as(responses) <= sequence_length.unsqueeze(1)
 
@@ -310,8 +310,8 @@ if __name__ == '__main__':
     disable_dropout_in_model(policy)
 
     base_columns = [
-        "llama_prompt_tokens", "llama_chosen_tokens", "chosen_reward",
-        "llama_reject_tokens", "reject_reward", "g_chosen", "g_reject"
+        "qwen_prompt_tokens", "qwen_chosen_tokens", "chosen_reward",
+        "qwen_reject_tokens", "reject_reward", "g_chosen", "g_reject"
     ]
     logprob_columns = base_columns + ["chosen_logprob", "reject_logprob"]
 
@@ -420,12 +420,12 @@ if __name__ == '__main__':
         for mini_batch_start in range(0, args.local_batch_size, args.per_device_train_batch_size):
             mini_batch_end = mini_batch_start + args.per_device_train_batch_size
             with accelerator.accumulate(policy):
-                mb_query = data["llama_prompt_tokens"][mini_batch_start : mini_batch_end]
+                mb_query = data["qwen_prompt_tokens"][mini_batch_start : mini_batch_end]
 
-                mb_chosen_response = data["llama_chosen_tokens"][mini_batch_start : mini_batch_end]
+                mb_chosen_response = data["qwen_chosen_tokens"][mini_batch_start : mini_batch_end]
                 mb_chosen_logprob = data["chosen_logprob"][mini_batch_start : mini_batch_end]
 
-                mb_reject_response = data["llama_reject_tokens"][mini_batch_start : mini_batch_end]
+                mb_reject_response = data["qwen_reject_tokens"][mini_batch_start : mini_batch_end]
                 mb_reject_logprob = data["reject_logprob"][mini_batch_start : mini_batch_end]
 
                 mb_g_chosen = data["g_chosen"][mini_batch_start : mini_batch_end]
