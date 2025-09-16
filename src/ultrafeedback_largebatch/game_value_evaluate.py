@@ -32,14 +32,14 @@ def set_seed(seed: int = 5775709):
 def parse_arguments():
     parser = argparse.ArgumentParser()
     # Data and models
-    parser.add_argument("--dataset_repo", type=str, required=True, help="Hugging Face dataset repo id (split=train)")
-    parser.add_argument("--base_model", type=str, required=True, help="Model id/path to sample base responses")
-    parser.add_argument("--check_points", type=str, nargs='+', required=True, help="One or more model ids/paths to evaluate")
+    parser.add_argument("--dataset_repo", type=str, default="zjhhhh/Qwen2.5_3B_generation", help="Hugging Face dataset repo id (split=train)")
+    parser.add_argument("--base_model", type=str, default="Qwen/Qwen2.5-3B-Instruct", help="Model id/path to sample base responses")
+    parser.add_argument("--check_points", type=str, nargs='+', default=["Qwen/Qwen2.5-3B-Instruct"], help="One or more model ids/paths to evaluate")
     parser.add_argument("--output_repo_prefix", type=str, required=True, help="Prefix for output repo; final repo is {prefix}_{model_name}")
 
     # Generation
     parser.add_argument("--n_response", type=int, default=2, help="Number of responses to sample per prompt for base/model")
-    parser.add_argument("--maxlen", type=int, default=2048)
+    parser.add_argument("--maxlen", type=int, default=8192)
     parser.add_argument("--world_size", type=int, default=4)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top_p", type=float, default=0.9)
@@ -47,7 +47,7 @@ def parse_arguments():
     parser.add_argument("--end_idx", type=int, default=-1)
 
     # Judge
-    parser.add_argument("--judge_model", type=str, default="qwen/qwen-2.5-72b-instruct")
+    parser.add_argument("--judge_model", type=str, default="openai/gpt-5")
     parser.add_argument("--n_judge_samples", type=int, default=5)
     parser.add_argument("--max_concurrent", type=int, default=50)
     parser.add_argument("--openrouter_api_key", type=str, default=None, help="Optional; else use env OPENROUTER_API_KEY/OPENAI_API_KEY")
@@ -75,7 +75,12 @@ def split_requirements_to_checks(dataset: Dataset) -> Dataset:
         requirements_str: str = row.get("requirements", "")
         if not requirements_str:
             # Fallback: if no structured requirements, keep a single "check" equal to prompt
-            expanded.append({**row, "check": row["prompt"], "importance": None})
+            expanded.append({
+                "prompt": row["prompt"],
+                "requirements": requirements_str,
+                "check": row["prompt"],
+                "importance": None,
+            })
             continue
 
         counter = 1
@@ -95,31 +100,27 @@ def split_requirements_to_checks(dataset: Dataset) -> Dataset:
 
         parts = list(map(lambda s: s.strip(), parts))
         for chunk in parts:
-            new_row = dict(row)
+            base_fields = {
+                "prompt": row["prompt"],
+                "requirements": requirements_str,
+            }
             if "(importance:" in chunk:
-                new_row["check"] = chunk.split("(importance:")[0].strip()
+                check_text = chunk.split("(importance:")[0].strip()
                 try:
-                    new_row["importance"] = int(chunk.split("(importance:")[1].split("/")[0].strip())
+                    importance_val = int(chunk.split("(importance:")[1].split("/")[0].strip())
                 except Exception:
-                    new_row["importance"] = None
+                    importance_val = None
+                expanded.append({**base_fields, "check": check_text, "importance": importance_val})
             else:
-                new_row["check"] = chunk
-                new_row["importance"] = None
-            expanded.append(new_row)
+                expanded.append({**base_fields, "check": chunk, "importance": None})
 
     return Dataset.from_list(expanded)
 
 
 def load_preference_5score_template() -> str:
-    # Prefer template colocated in ultrafeedback_judge
-    candidate = Path(__file__).parent.parent / "ultrafeedback_judge" / "prompt_preference_5score.txt"
-    if candidate.exists():
-        return candidate.read_text()
-    # Fallback to any copy in repo
-    alt = Path(__file__).parent.parent / "checklist_judge_data_parallel" / "prompt_preference_5score_explanation.txt"
-    if alt.exists():
-        return alt.read_text()
-    raise FileNotFoundError("prompt_preference_5score*.txt not found")
+    template_path = "src/ultrafeedback_judge/prompt_preference_5score.txt"
+    with open(template_path, 'r') as f:
+        return f.read()
 
 
 def get_numeric_mode(values: List[int], score_range: Tuple[int, int]) -> int:
@@ -256,6 +257,38 @@ def add_static_response_columns(dataset: Dataset, rows: List[dict], prompt_to_id
         col = [model_resps[prompt_to_idx[rows[r]["prompt"]]][j] for r in range(num_rows)]
         dataset = dataset.add_column(f"model_response_{j}", col)
     return dataset
+
+
+def merge_dataset_results(dataset: Dataset) -> Dataset:
+    """Merge rows by prompt, aggregating judge columns into lists.
+
+    Keeps scalar fields per prompt: prompt, requirements, base_response_*, model_response_*.
+    Aggregates all columns starting with 'judge_' and ending with '_majority' or '_mean' into lists.
+    """
+    merged: Dict[str, dict] = {}
+    for row in dataset:
+        prompt = row["prompt"]
+        if prompt not in merged:
+            base_fields = {}
+            # Keep scalar fields
+            for key, value in row.items():
+                if key == "prompt" or key == "requirements" or key.startswith("base_response_") or key.startswith("model_response_"):
+                    base_fields[key] = value
+            # Initialize judge lists for any judge columns present in this row
+            for key in row.keys():
+                if key.startswith("judge_") and (key.endswith("_majority") or key.endswith("_mean")):
+                    base_fields[key] = []
+            merged[prompt] = base_fields
+
+        # Append judge values (skip None)
+        for key, value in row.items():
+            if key.startswith("judge_") and (key.endswith("_majority") or key.endswith("_mean")):
+                if key not in merged[prompt]:
+                    merged[prompt][key] = []
+                if value is not None:
+                    merged[prompt][key].append(value)
+
+    return Dataset.from_list(list(merged.values()))
 
 
 def score(repo_id: str, beta: float) -> float:
@@ -398,6 +431,12 @@ async def main():
         repo_id = f"{args.output_repo_prefix}_{model_name}"
         print(f"Pushing results to {repo_id} ...")
         ds.push_to_hub(repo_id)
+
+        # Also push merged-by-prompt dataset with judge scores saved as lists
+        ds_merged = merge_dataset_results(ds)
+        merged_repo_id = f"{repo_id}_merged"
+        print(f"Pushing merged results to {merged_repo_id} ...")
+        ds_merged.push_to_hub(merged_repo_id)
 
         # Score (placeholder)
         result = score(repo_id, args.beta)
