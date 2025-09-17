@@ -16,6 +16,8 @@ def parse_arguments():
     parser.add_argument("--selection_response", type=int, default=3, help="count of selection_response_i columns to score (i starts at 1)")
     parser.add_argument("--base_response", type=int, default=2, help="count of base_response_i columns to score (i starts at 1)")
     parser.add_argument("--current_response", type=int, default=3, help="count of current_response_i columns to score (i starts at 1)")
+    parser.add_argument("--start_idx", type=int, default=0, help="inclusive start index of dataset slice")
+    parser.add_argument("--end_idx", type=int, default=None, help="exclusive end index of dataset slice (defaults to dataset end)")
     return parser.parse_args()
 
 
@@ -58,11 +60,13 @@ def main():
     # init
     args = parse_arguments()
     dataset = load_dataset(args.input_repo, split='train')
+    if args.end_idx is None:
+        args.end_idx = len(dataset)
+    dataset = dataset.select(range(args.start_idx, args.end_idx))
 
     # gather reward
     rewards = {}
     rm = ArmoRMPipeline(args.reward_model, trust_remote_code=True)
-
 
     column_names = set(dataset.column_names)
 
@@ -72,6 +76,40 @@ def main():
         ("base_response", args.base_response),
         ("current_response", args.current_response),
     ]
+
+    # Filter out rows where prompt + ANY response would exceed tokenizer max_length
+    response_columns = []
+    for prefix, count in categories:
+        for i in range(1, count + 1):
+            col_name = f"{prefix}_{i}"
+            if col_name in column_names:
+                response_columns.append(col_name)
+
+    if response_columns:
+        max_len = rm.max_length
+        print(f"Filtering rows longer than {max_len} tokens across {len(response_columns)} response columns...")
+
+        def within_limit(row):
+            prompt = row.get('prompt', '')
+            for rc in response_columns:
+                response = row.get(rc, None)
+                if response is None:
+                    continue
+                messages = get_message(prompt, response)
+                input_ids = rm.tokenizer.apply_chat_template(
+                    messages,
+                    return_tensors="pt",
+                    truncation=False,
+                )
+                seq_len = input_ids.shape[1] if input_ids.dim() == 2 else input_ids.shape[0]
+                if seq_len > max_len:
+                    return False
+            return True
+
+        before = len(dataset)
+        dataset = dataset.filter(within_limit, desc="filter-long-rows")
+        after = len(dataset)
+        print(f"Filtered {before - after} rows; {after} remain.")
 
     for prefix, count in categories:
         for i in range(1, count + 1):
@@ -88,7 +126,7 @@ def main():
     for k, v in rewards.items():
         dataset = dataset.add_column(k, v)
 
-    dataset.push_to_hub(args.input_repo+'_armo')
+    dataset.push_to_hub(f"{args.input_repo}_armo_{args.end_idx}")
 
 
 if __name__ == "__main__":
