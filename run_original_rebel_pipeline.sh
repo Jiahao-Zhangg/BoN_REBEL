@@ -12,7 +12,7 @@ set -e  # Exit on any error
 cd BoN_REBEL
 
 # Activate conda environment
-source /project/flame/jiahaoz4/miniconda3/etc/profile.d/conda.sh
+source /project/flame/$USER/miniconda3/etc/profile.d/conda.sh
 
 # Configuration variables (modify as needed)
 ETA="1e5"  # REBEL eta parameter
@@ -23,6 +23,11 @@ EVAL_RESULTS_DIR="../qwen2.5_3B_Instruct_rebel_evaluation_results"  # Directory 
 
 echo "Starting training pipeline from BoN_REBEL directory..."
 echo "Current working directory: $(pwd)"
+
+# Create necessary directories
+echo "Creating output directories..."
+mkdir -p "$OUTPUT_DIR"        # Create full output directory (e.g., ../original_rebel/outputs_1e5)
+mkdir -p "$EVAL_RESULTS_DIR"  # Create evaluation results directory
 
 # Step 1: Training
 echo "Step 1: Running training..."
