@@ -13,8 +13,9 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--reward_model", type=str, default="RLHFlow/ArmoRM-Llama3-8B-v0.1")
     parser.add_argument("--input_repo", type=str, required=True, help="output repo from generate.py")
-    parser.add_argument("--selection_pairs", type=int, default=5, help="number of pairs to use for selecting chosen/reject responses")
-    parser.add_argument("--gradient_pairs", type=int, default=5, help="number of pairs to use for gradient estimation")
+    parser.add_argument("--selection_response", type=int, default=3, help="count of selection_response_i columns to score (i starts at 1)")
+    parser.add_argument("--base_response", type=int, default=2, help="count of base_response_i columns to score (i starts at 1)")
+    parser.add_argument("--current_response", type=int, default=3, help="count of current_response_i columns to score (i starts at 1)")
     return parser.parse_args()
 
 
@@ -38,7 +39,7 @@ class ArmoRMPipeline:
         self.device = self.model.device
         self.max_length = max_length
 
-    def __call__(self, messages: List[Dict[str, str]]) -> Dict[str, float]:
+    def __call__(self, messages: List[Dict[str, str]]) -> float:
         input_ids = self.tokenizer.apply_chat_template(
             messages,
             return_tensors="pt",
@@ -62,14 +63,28 @@ def main():
     rewards = {}
     rm = ArmoRMPipeline(args.reward_model, trust_remote_code=True)
 
-    # gather reward
-    total_pairs = args.selection_pairs + args.gradient_pairs
-    for i in range(total_pairs):
-        print(f'gathering reward for {i+1}th response')
-        rewards[f"response_{i}_reward"] = []
-        for row in tqdm(dataset):
-            reward = rm(get_message(row['prompt'], row[f'response_{i}']))
-            rewards[f"response_{i}_reward"].append(reward)
+
+    column_names = set(dataset.column_names)
+
+    # score all selection_response_i, base_response_i, and current_response_i
+    categories = [
+        ("selection_response", args.selection_response),
+        ("base_response", args.base_response),
+        ("current_response", args.current_response),
+    ]
+
+    for prefix, count in categories:
+        for i in range(1, count + 1):
+            col_name = f"{prefix}_{i}"
+            if col_name not in column_names:
+                continue
+            reward_col = f"{col_name}_reward"
+            print(f'gathering reward for {col_name}')
+            rewards[reward_col] = []
+            for row in tqdm(dataset):
+                reward = rm(get_message(row['prompt'], row[col_name]))
+                rewards[reward_col].append(reward)
+
     for k, v in rewards.items():
         dataset = dataset.add_column(k, v)
 
