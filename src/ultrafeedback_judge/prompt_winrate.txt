@@ -1,0 +1,26 @@
+Based on the provided input instruction and two sample responses from a worker, assess the responses based on the following questions. Determine the response which better answers those questions. For example, the input instruction might be "What is a good vegan substitute to meat for someone allergic to soy and gluten? Provide an answer followed by a factually detailed and humorous one-sentence explanation" and the criterion questions might be "Is the explanation factually detailed?" and "Is the explanation humorous?". Your selection should be based primarily on the responses and the questions alone, with the instruction shown for context when needed.
+There are roughly five levels of response quality:
+- 100: The generated text represents an optimal solution that expertly balances all relevant factors in the questions. For objective criteria (like "Does each sentence use second person?"), even minor deviations exclude a 100 rating. For subjective criteria, the response should basically be perfect. For the example above, and the criteria "factual detail" and "humor," a 100-point response might be: "Mushrooms, because they caramelize and brown beautifully, rich in glutamates for umami depth, versatile in texture, and they’re basically the stand-up comedians of the produce aisle—funny without trying." This nails both factual and humorous aspects.
+- ~75: Very effective and unconditionally acceptable, but room for minor improvements. For instance: "Mushrooms - they contain glutamates for umami flavors and don’t look cute in the slightest." Factually solid, somewhat funny, but could be more detailed.
+- ~50: Adequate, but with notable flaws. For example: "Mushrooms, because they caramelize well and many chefs love them." Some fact, vague humor, missed detail.
+- ~25: Shows awareness of the criteria but fails to execute effectively. Example: "Mushrooms, beloved by kids and caramelize well." Humor irrelevant, claim inaccurate.
+- 0: Fails on at least one critical criterion. Example: "Mushrooms, because animals are overrated." Funny, but zero factual detail.
+
+Important Reminder: The choice must always reflect your preference between the two responses. This is a relative judgment — do not evaluate each response in isolation. Even if both responses are good (or both are bad), you must choose one based on comparison.
+Given this range of scores, determine which response performs better according to the criteria. Do not assign a specific score to each response, just provide the letter (A or B) corresponding to the better response. You should use your judgment to determine the most appropriate response. Focus only on the listed questions and ignore unrelated aspects of response quality. Return only a single letter – no other text.
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Input:
+{prompt}
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Generated Text A:
+{response_a}
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Generated Text B:
+{response_b}
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Questions:
+{checks}
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Preference:
