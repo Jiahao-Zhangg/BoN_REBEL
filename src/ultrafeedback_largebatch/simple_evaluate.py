@@ -15,6 +15,12 @@ import multiprocessing
 from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+from importlib import import_module
+llama_mod = import_module("transformers.models.llama.modeling_llama")
+if not hasattr(llama_mod, "LLAMA_INPUTS_DOCSTRING"):
+    setattr(llama_mod, "LLAMA_INPUTS_DOCSTRING", "")
+
 from vllm import LLM, SamplingParams
 from typing import Dict, List
 from itertools import combinations
@@ -135,11 +141,6 @@ def generate_responses(model_path, dataset, maxlen, world_size, n):
                 tensor_parallel_size=world_size,
                 max_model_len=maxlen,
                 gpu_memory_utilization=0.85,  # Reduced to leave more room for cleanup
-                disable_custom_all_reduce=True,  # Help with multi-GPU issues
-                enforce_eager=False,
-                trust_remote_code=True,
-                enable_prefix_caching=False,  # Disable to reduce memory usage
-                use_v2_block_manager=False,   # Use stable block manager
             )
             
             # Prepare prompts
@@ -150,7 +151,7 @@ def generate_responses(model_path, dataset, maxlen, world_size, n):
             for i in range(n):
                 set_seed(i * 50)
                 sampling_params = SamplingParams(
-                    temperature=0.8,
+                    temperature=0.1,
                     top_p=0.9,
                     max_tokens=maxlen,
                     seed=i * 50,
