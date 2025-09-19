@@ -309,16 +309,7 @@ def main():
         model_name = sanitize_model_name(model_id.split(":")[0])
         print(f"\n=== Evaluating {model_name} ===")
 
-        # Instantiate judge per model to reduce peak memory
-        judge_tokenizer = AutoTokenizer.from_pretrained(args.judge_model)
-        judge_llm = LLM(
-            model=args.judge_model,
-            tensor_parallel_size=args.world_size,
-            gpu_memory_utilization=args.gpu_memory_utilization,
-            trust_remote_code=True,
-        )
-
-        # Generate candidate model responses
+        # Generate candidate model responses (judge model NOT loaded yet)
         model_resps = generate_n_responses(
             model_id,
             unique_prompts,
@@ -328,6 +319,15 @@ def main():
             args.temperature,
             args.top_p,
             args.gpu_memory_utilization,
+        )
+
+        # Instantiate judge per model to reduce peak memory
+        judge_tokenizer = AutoTokenizer.from_pretrained(args.judge_model)
+        judge_llm = LLM(
+            model=args.judge_model,
+            tensor_parallel_size=args.world_size,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            trust_remote_code=True,
         )
 
         num_rows = len(expanded_rows)
@@ -441,6 +441,13 @@ def main():
             pass
         try:
             del judge_tokenizer
+        except Exception:
+            pass
+        cleanup_memory()
+
+        # Free model responses from CPU RAM before next checkpoint
+        try:
+            del model_resps
         except Exception:
             pass
         cleanup_memory()
