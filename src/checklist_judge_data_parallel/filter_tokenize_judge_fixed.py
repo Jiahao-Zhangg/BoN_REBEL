@@ -9,12 +9,16 @@ from transformers import AutoTokenizer
 torch.set_printoptions(threshold=10_000)
 
 
+# WARNING: Magic number, make sure it works for your model
+SYS_PROMPT_LEN = 24
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Filter + tokenize using ONLY a single fixed check per prompt (1D case).",
     )
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
-    parser.add_argument("--input_repo", type=str, default="zjhhhh/sw_maxlen_8192",
+    parser.add_argument("--input_repo", type=str, default="zjhhhh/whole_sw_maxlen_8192_rescale",
                         help="HF dataset repo to load (expects selection/current/base responses and score vectors + requirements)")
     parser.add_argument("--maxlen", type=int, default=2048)
     parser.add_argument("--maxlen_prompt", type=int, default=1024)
@@ -140,25 +144,10 @@ def main():
             else:
                 tokenizer_left.add_special_tokens({"pad_token": "[PAD]"})
 
-    def compute_qwen_slicing_idx(tok):
-        """Find the start-of-content offset by aligning raw content tokens inside the templated assistant message."""
-        sample = "__QWEN_SLICE_PROBE__"
-        full = tok.apply_chat_template(get_message(response=sample), tokenize=True, add_generation_prompt=False)
-        full_ids = full["input_ids"] if isinstance(full, dict) else full
-        content_ids = tok(sample, add_special_tokens=False)["input_ids"]
-
-        # Simple subsequence search
-        def find_subseq(haystack, needle):
-            n, m = len(haystack), len(needle)
-            for i in range(0, n - m + 1):
-                if haystack[i:i+m] == needle:
-                    return i
-            return -1
-
-        pos = find_subseq(full_ids, content_ids)
-        if pos < 0:
-            raise RuntimeError("Failed to locate content within Qwen assistant template; cannot compute slicing index.")
-        return pos
+    if "Qwen" in args.model:
+        slicing_idx_used = SYS_PROMPT_LEN
+    else:
+        slicing_idx_used = args.slicing_idx
 
     dataset = load_dataset(args.input_repo, split='train')
     print('initial length:', len(dataset))
@@ -168,23 +157,59 @@ def main():
         get_message(row['prompt']), tokenize=True, add_generation_prompt=True, return_tensors='pt').shape[-1] <= args.maxlen_prompt)
     print('filtered long prompts:', len(dataset))
 
-    # Filter responses by length
-    for i in range(1, 4):
-        key = f'selection_response_{i}'
-        dataset = dataset.filter(lambda row, _key=key: tokenizer.apply_chat_template(
-            get_message(response=row[_key]), tokenize=True, add_generation_prompt=False, return_tensors='pt')[:, 5:].shape[-1] <= args.maxlen)
-        print(f'filtered {key}:', len(dataset))
+    # Filter responses by length across all selection/current/base response columns
+    response_pattern = re.compile(r'^(selection|current|base)_response_\d+$')
+    response_columns = sorted([name for name in dataset.column_names if response_pattern.match(name)])
+    if not response_columns:
+        raise ValueError("Dataset is missing response columns required for length filtering.")
+    print(f'response columns length-filtered: {response_columns}')
+
+    def responses_within_limit(row):
+        for col in response_columns:
+            resp = row[col]
+            if not isinstance(resp, str):
+                return False
+            tokens = tokenizer.apply_chat_template(
+                get_message(response=resp),
+                tokenize=True,
+                add_generation_prompt=False,
+                return_tensors='pt',
+            )[:, SYS_PROMPT_LEN:]
+            if tokens.shape[-1] > args.maxlen:
+                return False
+        return True
+
+    dataset = dataset.filter(responses_within_limit)
+    print('filtered responses by length:', len(dataset))
+
+    # filter responses that don't end with PAD or EOS token after tokenization
+    def responses_end_properly(row):
+        for col in response_columns:
+            resp = row[col]
+            if not isinstance(resp, str):
+                return False
+            response_token = tokenizer.apply_chat_template(
+                get_message(response=resp),
+                add_generation_prompt=False,
+                tokenize=True,
+                padding='max_length',
+                max_length=args.maxlen + SYS_PROMPT_LEN,
+            )[SYS_PROMPT_LEN:]
+
+            if "Qwen" in args.model:
+                last_id = int(response_token[-1])
+                pid = tokenizer.pad_token_id
+                eid = tokenizer.eos_token_id
+                if not ((pid is not None and last_id == pid) or (eid is not None and last_id == eid)):
+                    return False
+        return True
+
+    dataset = dataset.filter(responses_end_properly)
+    print('filtered responses not ending with PAD/EOS:', len(dataset))
 
     # Ensure requirements column exists for locating the fixed check index
     if 'requirements' not in dataset.column_names:
         raise ValueError("Dataset is missing 'requirements' column required to locate fixed check index per prompt.")
-
-    # Pre-compute Qwen slicing index if needed
-    if "Qwen" in args.model:
-        slicing_idx_used = compute_qwen_slicing_idx(tokenizer)
-        print(f'slicing index used: {slicing_idx_used}')
-    else:
-        slicing_idx_used = args.slicing_idx
 
     # Add prompt tokens
     qwen_prompts = []
@@ -345,7 +370,7 @@ def main():
 
     # Split and push (keep naming consistent)
     dataset = dataset.train_test_split(test_size=1000, shuffle=True)
-    dataset.push_to_hub(args.input_repo + '_' + args.score_type + '_maxlenprompt_' + str(args.maxlen_prompt) + '_fixed_tokenized')
+    dataset.push_to_hub(args.input_repo + '_' + args.score_type + '_maxlenp_' + str(args.maxlen_prompt)+'_beta_'+str(args.beta) + '_fixed_tokenized')
 
 
 if __name__ == "__main__":
