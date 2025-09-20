@@ -163,7 +163,7 @@ def main():
     dataset = dataset.add_column("qwen_prompt_tokens", qwen_prompt_tokens)
 
     escaped_score_type = re.escape(args.score_type)
-    score_pattern = re.compile(rf"^selection_(\\d+)_base_(\\d+)_({escaped_score_type})$")
+    score_pattern = re.compile(rf"^selection_(\d+)_base_(\d+)_({escaped_score_type})$")
     selection_ids = set()
     base_ids = set()
     for name in dataset.column_names:
