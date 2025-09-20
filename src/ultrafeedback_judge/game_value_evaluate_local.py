@@ -16,6 +16,7 @@ from vllm.sampling_params import GuidedDecodingParams
 
 from pydantic import BaseModel, Field
 import gc
+import re
 
 
 # --------------------------
@@ -120,6 +121,48 @@ def reverse_score_5score(score: int) -> int:
     if score == -1:
         return -1
     return 4 - int(score)
+
+
+def parse_verdict_safely(text: str) -> Optional[int]:
+    """
+    Try to parse a verdict integer from model output. Prefer JSON, but
+    fall back to regex if JSON is malformed or truncated.
+    Accepts values in range [-1, 4]. Returns None if not found/invalid.
+    """
+    if not text:
+        return None
+    # First try strict JSON
+    try:
+        obj = json.loads(text)
+        # obj may be dict (preferred) or scalar
+        if isinstance(obj, dict):
+            value = obj.get("verdict", None)
+        else:
+            value = obj
+        if is_valid_5score(value):
+            return int(value)
+    except Exception:
+        pass
+
+    # Fall back: try to find 'verdict' key-like or bare score in text
+    # 1) key-based: "verdict": 3 or 'verdict': 3
+    match = re.search(r"verdict\s*[:=]\s*([-]?\d)", text, flags=re.IGNORECASE)
+    if match:
+        try:
+            cand = int(match.group(1))
+            return cand if is_valid_5score(cand) else None
+        except Exception:
+            pass
+
+    # 2) JSON-like minimal prefix, e.g., {"verdict": "3" ... truncated
+    match = re.search(r"\b([-]?\d)\b", text)
+    if match:
+        try:
+            cand = int(match.group(1))
+            return cand if is_valid_5score(cand) else None
+        except Exception:
+            pass
+    return None
 
 
 def aggregate_numeric_samples(samples: List[Optional[int]]) -> Tuple[Optional[float], Optional[int]]:
@@ -278,7 +321,6 @@ def main():
         raw = load_dataset(args.dataset_repo, split='train')
     if args.end_idx != -1:
         raw = raw.select(range(args.start_idx, min(args.end_idx, len(raw))))
-    raw = raw.select(range(1))
     # Prepare unique prompts
     unique_prompts: List[str] = list(dict.fromkeys([row["prompt"] for row in raw]))
     if args.max_prompts is not None:
@@ -373,7 +415,7 @@ def main():
 
                 # Collect all samples (optionally add switched direction)
                 all_samples: List[List[int]] = []
-                orig_texts = [[json.loads(r.text).get("verdict", None) for r in result.outputs] for result in response]
+                orig_texts = [[parse_verdict_safely(r.text) for r in result.outputs] for result in response]
                 for orig_samples in orig_texts:
                     filtered = [int(s) for s in orig_samples if is_valid_5score(s)]
                     all_samples.append(filtered)
@@ -391,7 +433,7 @@ def main():
                         prompts_switched.append(judge_tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True))
 
                     response_switched = judge_llm.generate(prompts_switched, sampling_params)
-                    switched_texts = [[json.loads(r.text).get("verdict", None) for r in result.outputs] for result in response_switched]
+                    switched_texts = [[parse_verdict_safely(r.text) for r in result.outputs] for result in response_switched]
                     for idx, switched_samples in enumerate(switched_texts):
                         filtered = [int(s) for s in switched_samples if is_valid_5score(s)]
                         reversed_scores = [reverse_score_5score(s) for s in filtered]
