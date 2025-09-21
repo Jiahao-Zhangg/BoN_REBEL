@@ -95,7 +95,7 @@ echo "Training completed successfully!"
 # Step 2: Convert all checkpoints to FP32 and upload each to Hugging Face
 echo "Step 2: Converting all checkpoints to FP32 and uploading to Hugging Face..."
 
-mapfile -d '' CHECKPOINT_DIRS < <(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d -name "ultrafeedback_rebel_*" -print0 | sort -z)
+mapfile -d '' CHECKPOINT_DIRS < <(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d -name "ultrafeedback_rebel_*" -print0 | sort -z -V)
 
 if [ ${#CHECKPOINT_DIRS[@]} -eq 0 ]; then
     echo "Error: No checkpoint directories found in $OUTPUT_DIR"
