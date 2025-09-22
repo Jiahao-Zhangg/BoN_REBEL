@@ -8,25 +8,24 @@ from transformers import AutoTokenizer
 
 torch.set_printoptions(threshold=10_000)
 
-
 # WARNING: Magic number, make sure it works for your model
 SYS_PROMPT_LEN = 24
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Filter + tokenize using the minimum value of averaged candidate-base scores with pooled candidates.",
+        description="Filter + tokenize while pooling current and selection responses using scalar scores.",
     )
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
-    parser.add_argument("--input_repo", type=str, default="zjhhhh/whole_sw_maxlen_8192_rescale",
-                        help="HF dataset repo to load (expects selection/current/base responses and score vectors + requirements)")
+    parser.add_argument("--input_repo", type=str, default="zjhhhh/whole_sw_maxlen_8192_nocheck_rescale",
+                        help="HF dataset repo to load (expects selection/current/base responses and scalar score columns)")
     parser.add_argument("--maxlen", type=int, default=2048)
     parser.add_argument("--maxlen_prompt", type=int, default=1024)
-    parser.add_argument("--beta", type=float, default=1.0, help="beta parameter for A/B/g computation")
+    parser.add_argument("--beta", type=float, default=1.0, help="beta parameter for weighting computation")
     parser.add_argument("--slicing_idx", type=int, default=24,
                         help="Fallback slicing index if model-specific detection not used")
     parser.add_argument("--score_type", type=str, default="mean", choices=["mean", "majority"],
-                        help="Use all mean or all majority score vectors when computing preferences")
+                        help="Use all mean or all majority score columns when computing preferences")
     return parser.parse_args()
 
 
@@ -66,6 +65,7 @@ def main():
         if tokenizer_left.pad_token != "[PAD]":
             tokenizer_left.add_special_tokens({"pad_token": "[PAD]"})
             tokenizer_left.pad_token = "[PAD]"
+        slicing_idx_used = SYS_PROMPT_LEN
     else:
         if tokenizer.pad_token is None:
             if tokenizer.eos_token is not None:
@@ -77,10 +77,6 @@ def main():
                 tokenizer_left.pad_token = tokenizer_left.eos_token
             else:
                 tokenizer_left.add_special_tokens({"pad_token": "[PAD]"})
-
-    if "Qwen" in args.model:
-        slicing_idx_used = SYS_PROMPT_LEN
-    else:
         slicing_idx_used = args.slicing_idx
 
     dataset = load_dataset(args.input_repo, split='train')
@@ -191,16 +187,38 @@ def main():
     g_chosen_list, g_reject_list = [], []
 
     for row in tqdm(dataset):
+        beta = args.beta
+
+        scores_by_candidate = {}
+        for cur_id in current_ids:
+            scores_by_candidate[("current", cur_id)] = {}
+        for sel_id in selection_ids:
+            scores_by_candidate[("selection", sel_id)] = {}
+
+        exp_terms = {}
+        for base_id in base_ids:
+            per_base_scores = []
+            for cur_id in current_ids:
+                key = f"current_{cur_id}_base_{base_id}_{args.score_type}"
+                score = float(row[key])
+                scores_by_candidate[("current", cur_id)][base_id] = score
+                per_base_scores.append(score)
+            for sel_id in selection_ids:
+                key = f"selection_{sel_id}_base_{base_id}_{args.score_type}"
+                score = float(row[key])
+                scores_by_candidate[("selection", sel_id)][base_id] = score
+                per_base_scores.append(score)
+            inner = np.sum(per_base_scores) / (beta * len(per_base_scores))
+            exp_terms[base_id] = float(np.exp(-inner))
+
+        A_total = float(np.sum(list(exp_terms.values())))
+
         candidates = []
         for cur_id in current_ids:
-            base_vectors = []
+            weighted_sum = 0.0
             for base_id in base_ids:
-                key = f"current_{cur_id}_base_{base_id}_{args.score_type}"
-                p_vec = np.array(row[key], dtype=float)
-                base_vectors.append(p_vec)
-            stacked = np.stack(base_vectors, axis=0)
-            average_vector = np.mean(stacked, axis=0)
-            g_val = float(np.min(average_vector))
+                weighted_sum += scores_by_candidate[("current", cur_id)][base_id] * exp_terms[base_id]
+            g_val = float(weighted_sum / A_total)
             candidates.append({
                 "g": g_val,
                 "text": row[f"current_response_{cur_id}"],
@@ -209,14 +227,10 @@ def main():
             })
 
         for sel_id in selection_ids:
-            base_vectors = []
+            weighted_sum = 0.0
             for base_id in base_ids:
-                key = f"selection_{sel_id}_base_{base_id}_{args.score_type}"
-                p_vec = np.array(row[key], dtype=float)
-                base_vectors.append(p_vec)
-            stacked = np.stack(base_vectors, axis=0)
-            average_vector = np.mean(stacked, axis=0)
-            g_val = float(np.min(average_vector))
+                weighted_sum += scores_by_candidate[("selection", sel_id)][base_id] * exp_terms[base_id]
+            g_val = float(weighted_sum / A_total)
             candidates.append({
                 "g": g_val,
                 "text": row[f"selection_response_{sel_id}"],
@@ -296,7 +310,7 @@ def main():
     print('filtered same responses:', len(dataset))
 
     dataset = dataset.train_test_split(test_size=1000, shuffle=True)
-    dataset.push_to_hub(args.input_repo + '_' + args.score_type + '_min_equal_tokenized')
+    dataset.push_to_hub(args.input_repo + '_' + args.score_type +'_beta_'+str(args.beta) + '_nocheck_equal_tokenized')
 
 
 if __name__ == "__main__":

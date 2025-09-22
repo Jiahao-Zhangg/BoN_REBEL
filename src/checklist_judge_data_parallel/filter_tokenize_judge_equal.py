@@ -1,23 +1,29 @@
 import argparse
 import numpy as np
+import re
 import torch
 from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoTokenizer
-import re
 
 torch.set_printoptions(threshold=10_000)
 
+# WARNING: Magic number, make sure it works for your model
+SYS_PROMPT_LEN = 24
+
 
 def parse_arguments():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Filter + tokenize while pooling current and selection responses, selecting the best check dynamically.",
+    )
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
-    parser.add_argument("--input_repo", type=str, default="MisDrifter/test_dataset",
+    parser.add_argument("--input_repo", type=str, default="zjhhhh/whole_sw_maxlen_8192_rescale",
                         help="HF dataset repo to load (expects selection/current/base responses and score vectors)")
     parser.add_argument("--maxlen", type=int, default=2048)
-    parser.add_argument("--maxlen_prompt", type=int, default=8192)
+    parser.add_argument("--maxlen_prompt", type=int, default=1024)
     parser.add_argument("--beta", type=float, default=1.0, help="beta parameter for A/B/g computation")
-    parser.add_argument("--slicing_idx", type=int, default=30)
+    parser.add_argument("--slicing_idx", type=int, default=24,
+                        help="Fallback slicing index if model-specific detection not used")
     parser.add_argument("--score_type", type=str, default="mean", choices=["mean", "majority"],
                         help="Use all mean or all majority score vectors when computing preferences")
     return parser.parse_args()
@@ -39,7 +45,6 @@ def get_message(instruction=None, response=None):
             {"role": "user", "content": instruction},
             {"role": "assistant", "content": response}
         ]
-
     return message
 
 
@@ -47,33 +52,12 @@ def filter_same_responses(row):
     return row['chosen'] != row['reject']
 
 
-def compute_qwen_slicing_idx(tok):
-    sample = "__QWEN_SLICE_PROBE__"
-    full = tok.apply_chat_template(get_message(response=sample), tokenize=True, add_generation_prompt=False)
-    if isinstance(full, dict):
-        full_ids = full["input_ids"]
-    else:
-        full_ids = full
-    content_ids = tok(sample, add_special_tokens=False)["input_ids"]
-
-    def find_subseq(haystack, needle):
-        n, m = len(haystack), len(needle)
-        for i in range(0, n - m + 1):
-            if haystack[i:i+m] == needle:
-                return i
-        return -1
-
-    pos = find_subseq(full_ids, content_ids)
-    if pos < 0:
-        raise RuntimeError("Failed to locate content within Qwen assistant template; cannot compute slicing index.")
-    return pos
-
-
 def main():
     args = parse_arguments()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     tokenizer_left = AutoTokenizer.from_pretrained(args.model, padding_side='left')
+
     if "Qwen" in args.model:
         if tokenizer.pad_token != "[PAD]":
             tokenizer.add_special_tokens({"pad_token": "[PAD]"})
@@ -81,6 +65,7 @@ def main():
         if tokenizer_left.pad_token != "[PAD]":
             tokenizer_left.add_special_tokens({"pad_token": "[PAD]"})
             tokenizer_left.pad_token = "[PAD]"
+        slicing_idx_used = SYS_PROMPT_LEN
     else:
         if tokenizer.pad_token is None:
             if tokenizer.eos_token is not None:
@@ -92,27 +77,65 @@ def main():
                 tokenizer_left.pad_token = tokenizer_left.eos_token
             else:
                 tokenizer_left.add_special_tokens({"pad_token": "[PAD]"})
+        slicing_idx_used = args.slicing_idx
 
     dataset = load_dataset(args.input_repo, split='train')
-
     print('initial length:', len(dataset))
 
     dataset = dataset.filter(lambda row: tokenizer.apply_chat_template(
         get_message(row['prompt']), tokenize=True, add_generation_prompt=True, return_tensors='pt').shape[-1] <= args.maxlen_prompt)
     print('filtered long prompts:', len(dataset))
-    for i in range(1, 4):
-        key = f'selection_response_{i}'
-        dataset = dataset.filter(lambda row, _key=key: tokenizer.apply_chat_template(
-            get_message(response=row[_key]), tokenize=True, add_generation_prompt=False, return_tensors='pt')[:, 5:].shape[-1] <= args.maxlen)
-        print(f'filtered {key}:', len(dataset))
+
+    response_pattern = re.compile(r'^(selection|current|base)_response_\d+$')
+    response_columns = sorted([name for name in dataset.column_names if response_pattern.match(name)])
+    if not response_columns:
+        raise ValueError("Dataset is missing response columns required for length filtering.")
+    print(f'response columns length-filtered: {response_columns}')
+
+    def responses_within_limit(row):
+        for col in response_columns:
+            resp = row[col]
+            if not isinstance(resp, str):
+                return False
+            tokens = tokenizer.apply_chat_template(
+                get_message(response=resp),
+                tokenize=True,
+                add_generation_prompt=False,
+                return_tensors='pt',
+            )[:, SYS_PROMPT_LEN:]
+            if tokens.shape[-1] > args.maxlen:
+                return False
+        return True
+
+    dataset = dataset.filter(responses_within_limit)
+    print('filtered responses by length:', len(dataset))
+
+    def responses_end_properly(row):
+        for col in response_columns:
+            resp = row[col]
+            if not isinstance(resp, str):
+                return False
+            response_token = tokenizer.apply_chat_template(
+                get_message(response=resp),
+                add_generation_prompt=False,
+                tokenize=True,
+                padding='max_length',
+                max_length=args.maxlen + SYS_PROMPT_LEN,
+            )[SYS_PROMPT_LEN:]
+
+            if "Qwen" in args.model:
+                last_id = int(response_token[-1])
+                pid = tokenizer.pad_token_id
+                eid = tokenizer.eos_token_id
+                if not ((pid is not None and last_id == pid) or (eid is not None and last_id == eid)):
+                    return False
+        return True
+
+    dataset = dataset.filter(responses_end_properly)
+    print('filtered responses not ending with PAD/EOS:', len(dataset))
 
     qwen_prompts = []
     qwen_prompt_tokens = []
-    if "Qwen" in args.model:
-        slicing_idx_used = compute_qwen_slicing_idx(tokenizer)
-        print(f'slicing index used: {slicing_idx_used}')
-    else:
-        slicing_idx_used = args.slicing_idx
     for row in tqdm(dataset):
         qwen_prompt_token = tokenizer_left.apply_chat_template(
             get_message(row['prompt']),
@@ -167,11 +190,11 @@ def main():
     for row in tqdm(dataset):
         beta = args.beta
 
-        candidate_scores = {}
+        scores_by_candidate = {}
         for cur_id in current_ids:
-            candidate_scores[("current", cur_id)] = {}
+            scores_by_candidate[("current", cur_id)] = {}
         for sel_id in selection_ids:
-            candidate_scores[("selection", sel_id)] = {}
+            scores_by_candidate[("selection", sel_id)] = {}
 
         exp_terms = {}
         for base_id in base_ids:
@@ -179,12 +202,12 @@ def main():
             for cur_id in current_ids:
                 key = f"current_{cur_id}_base_{base_id}_{args.score_type}"
                 p_vec = np.array(row[key], dtype=float)
-                candidate_scores[("current", cur_id)][base_id] = p_vec
+                scores_by_candidate[("current", cur_id)][base_id] = p_vec
                 per_base_vectors.append(p_vec)
             for sel_id in selection_ids:
                 key = f"selection_{sel_id}_base_{base_id}_{args.score_type}"
                 p_vec = np.array(row[key], dtype=float)
-                candidate_scores[("selection", sel_id)][base_id] = p_vec
+                scores_by_candidate[("selection", sel_id)][base_id] = p_vec
                 per_base_vectors.append(p_vec)
             stacked = np.stack(per_base_vectors, axis=0)
             inner = np.sum(stacked, axis=0) / (beta * stacked.shape[0])
@@ -197,14 +220,15 @@ def main():
             else:
                 A_vec = A_vec + exp_terms[base_id]
         j_star = int(np.argmax(A_vec))
+        A_star = float(A_vec[j_star])
         j_star_list.append(j_star)
 
         candidates = []
         for cur_id in current_ids:
             weighted_sum = 0.0
             for base_id in base_ids:
-                weighted_sum += candidate_scores[("current", cur_id)][base_id][j_star] * exp_terms[base_id][j_star]
-            g_val = float(weighted_sum / A_vec[j_star])
+                weighted_sum += scores_by_candidate[("current", cur_id)][base_id][j_star] * exp_terms[base_id][j_star]
+            g_val = float(weighted_sum / A_star)
             candidates.append({
                 "g": g_val,
                 "text": row[f"current_response_{cur_id}"],
@@ -215,8 +239,8 @@ def main():
         for sel_id in selection_ids:
             weighted_sum = 0.0
             for base_id in base_ids:
-                weighted_sum += candidate_scores[("selection", sel_id)][base_id][j_star] * exp_terms[base_id][j_star]
-            g_val = float(weighted_sum / A_vec[j_star])
+                weighted_sum += scores_by_candidate[("selection", sel_id)][base_id][j_star] * exp_terms[base_id][j_star]
+            g_val = float(weighted_sum / A_star)
             candidates.append({
                 "g": g_val,
                 "text": row[f"selection_response_{sel_id}"],
@@ -241,7 +265,7 @@ def main():
             add_generation_prompt=False,
             tokenize=True,
             padding='max_length',
-            max_length=args.maxlen+slicing_idx_used,
+            max_length=args.maxlen + slicing_idx_used,
         )[slicing_idx_used:]
         qwen_chosen_tokens.append(qwen_chosen_token)
         chosen_text = tokenizer.decode(qwen_chosen_token, skip_special_tokens=False)
@@ -261,7 +285,7 @@ def main():
             add_generation_prompt=False,
             tokenize=True,
             padding='max_length',
-            max_length=args.maxlen+slicing_idx_used,
+            max_length=args.maxlen + slicing_idx_used,
         )[slicing_idx_used:]
         qwen_reject_tokens.append(qwen_reject_token)
         reject_text = tokenizer.decode(qwen_reject_token, skip_special_tokens=False)
@@ -297,7 +321,7 @@ def main():
     print('filtered same responses:', len(dataset))
 
     dataset = dataset.train_test_split(test_size=1000, shuffle=True)
-    dataset.push_to_hub('zjhhhh/gangdu_tokenized_equal')
+    dataset.push_to_hub(args.input_repo + '_' + args.score_type +'_beta_'+ str(args.beta) + '_multi_equal_tokenized')
 
 
 if __name__ == "__main__":
