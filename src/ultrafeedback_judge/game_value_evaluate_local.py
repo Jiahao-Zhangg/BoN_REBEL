@@ -47,12 +47,18 @@ def parse_arguments():
     parser.add_argument("--output_repo_prefix", type=str, required=True, help="Prefix for output repo; final repo is {prefix}_{model_name}")
 
     # Generation
-    parser.add_argument("--n_response", type=int, default=2, help="Number of responses to sample per prompt for base/model")
+    parser.add_argument("--n_response", type=int, default=1, help="Number of responses to sample per prompt for base/model")
     parser.add_argument("--maxlen", type=int, default=8192)
     parser.add_argument("--world_size", type=int, default=4)
-    parser.add_argument("--temperature", type=float, default=0.1)
-    parser.add_argument("--top_p", type=float, default=1.0)
-    parser.add_argument("--gpu_memory_utilization", "--gpu-memory-utilization", type=float, default=0.85, help="vLLM GPU memory utilization fraction [0-1]")
+    parser.add_argument(
+        "--model_temperature", "--temperature", type=float, default=0.1,
+        help="Sampling temperature for base/checkpoint generations"
+    )
+    parser.add_argument(
+        "--model_top_p", "--top_p", type=float, default=0.9,
+        help="Top-p nucleus sampling value for base/checkpoint generations"
+    )
+    parser.add_argument("--gpu_memory_utilization", "--gpu-memory-utilization", type=float, default=0.95, help="vLLM GPU memory utilization fraction [0-1]")
     parser.add_argument("--start_idx", type=int, default=0)
     parser.add_argument("--end_idx", type=int, default=-1)
 
@@ -60,7 +66,18 @@ def parse_arguments():
     parser.add_argument("--judge_model", type=str, default="Qwen/Qwen3-14B")
     parser.add_argument("--n_judge_samples", type=int, default=5)
     parser.add_argument("--judge_max_tokens", type=int, default=256)
-    parser.add_argument("--top_k", type=int, default=20)
+    parser.add_argument(
+        "--judge_temperature", type=float, default=0.6,
+        help="Sampling temperature for the judge model"
+    )
+    parser.add_argument(
+        "--judge_top_p", type=float, default=0.95,
+        help="Top-p nucleus sampling value for the judge model"
+    )
+    parser.add_argument(
+        "--judge_top_k", "--top_k", type=int, default=20,
+        help="Top-k value for the judge model (alias --top_k for backward compatibility)"
+    )
     parser.add_argument("--switch_position", action="store_true", default=False, help="Collect preferences in both directions and reverse bias")
 
     # Debug
@@ -337,8 +354,8 @@ def main():
         args.world_size,
         args.maxlen,
         args.n_response,
-        args.temperature,
-        args.top_p,
+        args.model_temperature,
+        args.model_top_p,
         args.gpu_memory_utilization,
     )
 
@@ -358,8 +375,8 @@ def main():
             args.world_size,
             args.maxlen,
             args.n_response,
-            args.temperature,
-            args.top_p,
+            args.model_temperature,
+            args.model_top_p,
             args.gpu_memory_utilization,
         )
 
@@ -401,9 +418,9 @@ def main():
                 # Sampling params for judge
                 set_seed(0)
                 sampling_params = SamplingParams(
-                    temperature=args.temperature,
-                    top_p=args.top_p,
-                    top_k=args.top_k,
+                    temperature=args.judge_temperature,
+                    top_p=args.judge_top_p,
+                    top_k=args.judge_top_k,
                     n=args.n_judge_samples,
                     max_tokens=args.judge_max_tokens,
                     seed=0,
