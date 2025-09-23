@@ -79,6 +79,12 @@ def parse_arguments():
         help="Top-k value for the judge model (alias --top_k for backward compatibility)"
     )
     parser.add_argument("--switch_position", action="store_true", default=False, help="Collect preferences in both directions and reverse bias")
+    parser.add_argument(
+        "--winrate_metric",
+        choices=["majority", "mean"],
+        default="mean",
+        help="Use judge_{a}_{b}_majority or judge_{a}_{b}_mean (default) to determine wins",
+    )
 
     # Debug
     parser.add_argument("--max_prompts", type=int, default=None, help="Optional cap on number of unique prompts for testing")
@@ -252,9 +258,12 @@ def add_static_response_columns(dataset: Dataset, rows: List[dict], prompt_to_id
     return dataset
 
 
-def compute_simple_winrate_from_columns(ds: Dataset) -> Tuple[List[int], List[int], List[Optional[float]], Optional[float], List[Optional[float]], Optional[float]]:
-    # Compute per-prompt winrate from existing judge_{a}_{b}_majority columns.
-    # A win if majority > 2, loss if < 2, ignore == 2 or None.
+def compute_simple_winrate_from_columns(
+    ds: Dataset,
+    winrate_metric: str = "mean",
+) -> Tuple[List[int], List[int], List[Optional[float]], Optional[float], List[Optional[float]], Optional[float]]:
+    # Compute per-prompt winrate from judge columns.
+    # A win if value > 2, loss if < 2, ignore == 2 or None.
     # Also compute per-prompt average of judge_{a}_{b}_mean scores and its overall average.
     # Build prompt order
     prompts: List[str] = [row["prompt"] for row in ds]
@@ -273,12 +282,18 @@ def compute_simple_winrate_from_columns(ds: Dataset) -> Tuple[List[int], List[in
     totals_per_prompt: List[int] = [0] * len(unique_prompts)
     per_prompt_avg_mean: List[Optional[float]] = [None] * len(unique_prompts)
 
+    if winrate_metric not in {"majority", "mean"}:
+        raise ValueError(f"Unsupported winrate_metric: {winrate_metric}")
+
     for p_idx, p in enumerate(unique_prompts):
         row_indices = prompt_to_idxs[p]
-        # winrate via majority
+        # winrate via selected metric
         for a in range(n_model):
             for b in range(n_base):
-                col = f"judge_{a}_{b}_majority"
+                if winrate_metric == "majority":
+                    col = f"judge_{a}_{b}_majority"
+                else:
+                    col = f"judge_{a}_{b}_mean"
                 if col not in ds.column_names:
                     continue
                 for i in row_indices:
@@ -286,9 +301,11 @@ def compute_simple_winrate_from_columns(ds: Dataset) -> Tuple[List[int], List[in
                     if val is None:
                         continue
                     try:
-                        v = int(val)
+                        v = float(val)
                     except Exception:
                         continue
+                    if winrate_metric == "majority":
+                        v = int(v)
                     if v > 2:
                         wins_per_prompt[p_idx] += 1
                         totals_per_prompt[p_idx] += 1
@@ -481,12 +498,14 @@ def main():
             ds = ds.add_column(f"judge_{ai}_{bj}_mean", col)
 
         # Compute simple winrate per prompt from columns and push
-        wins, totals, per_prompt_wr, avg_wr, per_prompt_avg_mean, avg_of_means = compute_simple_winrate_from_columns(ds)
+        wins, totals, per_prompt_wr, avg_wr, per_prompt_avg_mean, avg_of_means = compute_simple_winrate_from_columns(
+            ds, winrate_metric=args.winrate_metric
+        )
         ds = ds.add_column("win_count", wins)
         ds = ds.add_column("pair_count", totals)
         ds = ds.add_column("winrate", per_prompt_wr)
         ds = ds.add_column("avg_mean", per_prompt_avg_mean)
-        print(f"Average winrate over prompts: {avg_wr}")
+        print(f"Average winrate over prompts ({args.winrate_metric}): {avg_wr}")
         print(f"Average of mean scores over prompts: {avg_of_means}")
 
         repo_id = f"{args.output_repo_prefix}_{model_name}"
