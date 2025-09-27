@@ -167,7 +167,7 @@ def main():
 
     # Prepare prompt template and guided decoding
     if args.judge_type == "baseline":
-        filename = "prompt_baseline2.txt"
+        filename = "prompt_baseline.txt"
         guided_decoding = PREFERENCE_BASELINE_GUIDED_DECODING
     with open(Path(__file__).parent / filename, "r") as f:
         prompt_template = f.read()
