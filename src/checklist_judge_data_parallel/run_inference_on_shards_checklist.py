@@ -104,7 +104,9 @@ def weighted_average(values, weights):
     if total_weight == 0:
         return None
 
-    return sum(v * w for v, w in pairs) / total_weight
+    result = sum(v * w for v, w in pairs) / total_weight
+    # Scale to [0, 1]
+    return result / 100.0
 
 
 def parse_args():
@@ -115,7 +117,7 @@ def parse_args():
     parser.add_argument("--shard_dir", type=str, default="./local_shards",
                         help="Directory containing shard_* folders")
 
-    parser.add_argument("--judge_model", type=str, default="Qwen/Qwen2.5-72B-Instruct")
+    parser.add_argument("--judge_model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--judge_type", type=str, default="baseline",
                         choices=["baseline"])
 
@@ -129,9 +131,6 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--top_k", type=int, default=20)
-    parser.add_argument("--switch_position", action="store_true", default=False,
-                        help="Collect preferences in both directions to mitigate positional bias")
-
     parser.add_argument("--output_dir", type=str, default="./outputs",
                         help="Directory to write JSONL results; one row per prompt with 10 scores")
     parser.add_argument("--push_to_hub", action="store_true", default=False,
