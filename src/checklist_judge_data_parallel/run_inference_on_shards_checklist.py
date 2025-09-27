@@ -16,7 +16,14 @@ from vllm.sampling_params import GuidedDecodingParams
 
 
 # ------------------ Structured outputs for guided decoding ------------------
-PREFERENCE_BASELINE_GUIDED_DECODING = GuidedDecodingParams(choice=[str(i) for i in range(-1, 101)])
+class Preference101ScoreOutput(BaseModel):
+    explanation: str
+    verdict: int = Field(ge=-1, le=101)
+
+
+PREFERENCE_BASELINE_GUIDED_DECODING = GuidedDecodingParams(
+    json=Preference101ScoreOutput.model_json_schema()
+)
 
 # ------------------ Utilities ------------------
 def set_seed(seed=5775709):
@@ -27,6 +34,12 @@ def set_seed(seed=5775709):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
+def extract_verdict(response_text: str):
+    try:
+        parsed = json.loads(response_text)
+    except Exception:
+        return None
+    return parsed.get("verdict", None)
 
 def get_winner(values: List[str]):
     counts = Counter(values)
@@ -154,7 +167,7 @@ def main():
 
     # Prepare prompt template and guided decoding
     if args.judge_type == "baseline":
-        filename = "prompt_baseline.txt"
+        filename = "prompt_baseline2.txt"
         guided_decoding = PREFERENCE_BASELINE_GUIDED_DECODING
     with open(Path(__file__).parent / filename, "r") as f:
         prompt_template = f.read()
@@ -250,29 +263,34 @@ def main():
             prompts.append(tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
 
         responses = llm.generate(prompts, sampling_params)
-
-        reduced_mean = []
-        reduced_majority = []
-        score_range = (0, 100)
-        expected_samples = sampling_params.n or args.n_samples
-
-        for req_out in responses:
-            raw_vals = []
-            for output in req_out.outputs[:expected_samples]:
-                text = output.text.strip()
-                if not text:
-                    continue
-                raw_vals.append(text.splitlines()[0].strip())
-
-            valid_vals = filter_valid_responses(raw_vals, args.judge_type)
-            if not valid_vals:
-                reduced_mean.append(None)
-                reduced_majority.append(None)
-                continue
-
-            numeric_vals = [int(v) for v in valid_vals]
-            reduced_mean.append(float(np.mean(numeric_vals)))
-            reduced_majority.append(get_numeric_mode(numeric_vals, score_range))
+        # Convert to list of per-row raw texts per sample
+        texts = [[o.text for o in r.outputs] for r in responses]
+        # Extract verdicts and filter
+        verdict_lists = []
+        for per_row in texts:
+            vals = [extract_verdict(t) for t in per_row]
+            vals = [v for v in vals if v is not None]
+            vals = filter_valid_responses(vals, args.judge_type)
+            verdict_lists.append(vals)
+        # Compute per-row stats on original direction only for now
+        orig_mean = []
+        orig_majority = []
+        for vals in verdict_lists:
+            if len(vals) == 0:
+                orig_mean.append(None)
+                orig_majority.append(None)
+            else:
+                ints = [int(v) for v in vals]
+                ints_no_missing = [x for x in ints if x != -1]
+                # Mean over non-missing only
+                if len(ints_no_missing) == 0:
+                    orig_mean.append(None)
+                else:
+                    orig_mean.append(float(np.mean(ints_no_missing)))
+                score_range = (0, 101)
+                orig_majority.append(get_numeric_mode(vals, score_range))
+        reduced_mean = orig_mean
+        reduced_majority = orig_majority
 
         if len(reduced_mean) != n_expanded:
             # Maintain alignment with expanded rows; fill with None if generation under-produced.
