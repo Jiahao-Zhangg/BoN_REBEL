@@ -5,7 +5,7 @@ import time
 import random
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 
 import numpy as np
 import torch
@@ -212,6 +212,20 @@ def aggregate_numeric_samples(samples: List[int]) -> Tuple[Optional[float], Opti
     return mean_val, majority_val
 
 
+def _collect_normalized_scores(value: Any) -> List[float]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        normalized: List[float] = []
+        for item in value:
+            normalized.extend(_collect_normalized_scores(item))
+        return normalized
+    try:
+        return [float(value) / 4]
+    except Exception:
+        return []
+
+
 def generate_n_responses(model_id: str, prompts: List[str], world_size: int, maxlen: int, n_response: int, temperature: float, top_p: float) -> List[List[str]]:
     print(f"Generating {n_response} responses per prompt with model: {model_id}")
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -325,12 +339,7 @@ def merge_dataset_results(dataset: Dataset) -> Dataset:
     return Dataset.from_list(list(merged.values()))
 
 
-def score(repo_id: str, beta: float) -> float:
-    try:
-        ds = load_dataset(repo_id, split='test')
-    except Exception:
-        ds = load_dataset(repo_id, split='train')
-
+def score_dataset(ds: Dataset, beta: float) -> float:
     # Determine counts
     base_cols = sorted([c for c in ds.column_names if c.startswith("base_response_")], key=lambda x: int(x.split("_")[-1]))
     model_cols = sorted([c for c in ds.column_names if c.startswith("model_response_")], key=lambda x: int(x.split("_")[-1]))
@@ -356,14 +365,11 @@ def score(repo_id: str, beta: float) -> float:
                 for a in range(n_model):
                     mean_key = f"judge_{a}_{b}_mean"
                     maj_key = f"judge_{a}_{b}_majority"
-                    v = row.get(mean_key, None)
-                    if v is None:
-                        v = row.get(maj_key, None)
-                    if v is not None:
-                        try:
-                            vals.append(float(v)/4)
-                        except Exception:
-                            continue
+                    values = _collect_normalized_scores(row.get(mean_key, None))
+                    if not values:
+                        values = _collect_normalized_scores(row.get(maj_key, None))
+                    if values:
+                        vals.extend(values)
                 if vals:
                     per_check_avgs.append(sum(vals) / len(vals))
             if per_check_avgs:
@@ -376,6 +382,14 @@ def score(repo_id: str, beta: float) -> float:
         return float('nan')
 
     return -beta * (sum(prompt_vals) / len(prompt_vals))
+
+
+def score(repo_id: str, beta: float) -> float:
+    try:
+        ds = load_dataset(repo_id, split='test')
+    except Exception:
+        ds = load_dataset(repo_id, split='train')
+    return score_dataset(ds, beta)
 
 
 def main():
@@ -536,6 +550,8 @@ def main():
         for (ai, bj), col in mean_cols.items():
             ds = ds.add_column(f"judge_{ai}_{bj}_mean", col)
 
+        result = score_dataset(ds, args.beta)
+
         # Push to hub
         repo_id = f"{args.output_repo_prefix}_{model_name}"
 
@@ -546,7 +562,6 @@ def main():
         ds_merged.push_to_hub(merged_repo_id)
 
         # Score (placeholder)
-        result = score(repo_id, args.beta)
         print(f"Score for {model_name}: {result}")
 
     print(f"Done. Total time: {time.time() - st:.2f}s")
