@@ -59,6 +59,12 @@ def parse_arguments():
         default=False,
         help="Also judge with responses swapped (B vs A) and reverse the resulting scores",
     )
+    parser.add_argument(
+        "--score_json_path",
+        type=str,
+        default=None,
+        help="Optional explicit path for the JSON score summary",
+    )
 
     # Scoring
     parser.add_argument("--beta", type=float, default=1.0)
@@ -224,8 +230,6 @@ def _collect_normalized_scores(value: Any) -> List[float]:
         return [float(value) / 4]
     except Exception:
         return []
-
-
 def generate_n_responses(model_id: str, prompts: List[str], world_size: int, maxlen: int, n_response: int, temperature: float, top_p: float) -> List[List[str]]:
     print(f"Generating {n_response} responses per prompt with model: {model_id}")
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -431,6 +435,7 @@ def main():
 
     # Iterate over candidate models
     expanded_rows = [row for row in expanded]
+    scores_accumulator: List[float] = []
     for model_id in args.check_points:
         model_name = sanitize_model_name(model_id.split(":")[0])
         print(f"\n=== Evaluating {model_name} ===")
@@ -563,8 +568,15 @@ def main():
 
         # Score (placeholder)
         print(f"Score for {model_name}: {result}")
+        scores_accumulator.append(result)
 
     print(f"Done. Total time: {time.time() - st:.2f}s")
+
+    summary_path = Path(args.score_json_path) if args.score_json_path else Path(f"{sanitize_model_name(args.output_repo_prefix)}_scores.json")
+    summary_data = {"checkpoints": args.check_points, "scores": scores_accumulator}
+    with open(summary_path, "w") as f:
+        json.dump(summary_data, f, indent=2)
+    print(f"Saved score summary to {summary_path}")
 
 
 if __name__ == "__main__":
