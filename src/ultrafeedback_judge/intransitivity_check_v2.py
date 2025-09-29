@@ -4,6 +4,26 @@ import networkx as nx
 from datasets import load_dataset
 from itertools import combinations
 import matplotlib.pyplot as plt
+import re
+
+
+def extract_criterion_number(requirements_text):
+    """
+    Extract the criterion number from requirements text.
+    Looks for pattern like '4) Does the response satisfy the following two criteria:' and returns 4.
+    Returns None if no pattern is found.
+    """
+    if not requirements_text:
+        return None
+    
+    # Look for pattern: number) Does the response satisfy the following two criteria:
+    pattern = r'(\d+)\) Does the response satisfy the following two criteria:'
+    match = re.search(pattern, requirements_text)
+    
+    if match:
+        return int(match.group(1))
+    else:
+        return None
 
 
 def transform_digit_to_preference(type, digit_scores):
@@ -15,10 +35,17 @@ def transform_digit_to_preference(type, digit_scores):
         return MAP[digit_scores]
 
 
-def process_dataset(dataset, n_response):
+def process_dataset(dataset, n_response, select_the_same_criterion=False):
     """
     Process dataset to extract and flatten preference columns for all pairs.
-    Returns a dictionary with keys as (i,j) tuples and values as flattened lists of preferences.
+    
+    Args:
+        dataset: The dataset to process
+        n_response: Number of responses to consider
+        select_the_same_criterion: If True, extract criterion number from requirements 
+                                 column and use only that specific index from preference data
+    
+    Returns a dictionary with keys as (i,j) tuples and values as lists of preferences.
     """
     preference_data = {}
     
@@ -28,13 +55,37 @@ def process_dataset(dataset, n_response):
             preference_data[(i, j)] = []
     
     for item in dataset:
-        # Extract and flatten preferences for all pairs
+        criterion_index = None
+        
+        # If select_the_same_criterion is True, extract the criterion number
+        if select_the_same_criterion:
+            if 'requirements' in item:
+                criterion_number = extract_criterion_number(item['requirements'])
+                if criterion_number is not None:
+                    # Convert to 0-based index (criterion number 4 -> index 3)
+                    criterion_index = criterion_number - 1
+                else:
+                    print(f"Warning: Could not extract criterion number from requirements: {item.get('requirements', 'N/A')}")
+                    continue
+            else:
+                print("Warning: 'requirements' column not found in dataset item")
+                continue
+        
+        # Extract preferences for all pairs
         for i in range(n_response):
             for j in range(i+1, n_response):
                 column_name = f'response_{i}_{j}_judged_preference_majority'
                 if column_name in item:
-                    # Flatten the list - extend adds each element individually
-                    preference_data[(i, j)].extend(item[column_name])
+                    if select_the_same_criterion and criterion_index is not None:
+                        # Use only the specific criterion index
+                        preference_list = item[column_name]
+                        if isinstance(preference_list, list) and len(preference_list) > criterion_index:
+                            preference_data[(i, j)].append(preference_list[criterion_index])
+                        else:
+                            print(f"Warning: Cannot access index {criterion_index} in {column_name}")
+                    else:
+                        # Flatten the list - extend adds each element individually
+                        preference_data[(i, j)].extend(item[column_name])
                 else:
                     print(f"Warning: Column {column_name} not found in dataset")
     
@@ -312,7 +363,7 @@ def analyze_for_n_responses(preference_data, n_response, data_type, verbose=True
 
 def main():
     parser = argparse.ArgumentParser(description='Check intransitivity using directed graphs')
-    parser.add_argument('--input_repo', type=str, required=True, 
+    parser.add_argument('--input_repo', type=str, default="MisDrifter/_judge_preference_ternary_8pairs_switch", 
                        help='HuggingFace repository name to load dataset from')
     parser.add_argument('--type', type=str, required=True, choices=['5score', 'ternary'],
                        help='Type of preference data (5score or ternary)')
@@ -320,12 +371,19 @@ def main():
                        help='Maximum number of responses to compare. When --plot is used, analyzes from 2 to n_response (default: 3)')
     parser.add_argument('--plot', action='store_true',
                        help='Generate plot showing trends vs number of responses (analyzes from 2 to n_response)')
+    parser.add_argument('--select_the_same_criterion', action='store_true',
+                       help='Extract criterion number from requirements column and use only that specific criterion from preference data')
+    parser.add_argument('--plot_type', type=str, default='both', choices=['intransitivity', 'condorcet', 'both'],
+                       help='Type of plot to generate: intransitivity only, condorcet (no winner) only, or both (default: both)')
     
     args = parser.parse_args()
     
     print(f"Loading dataset from: {args.input_repo}")
     print(f"Number of responses: {args.n_response}")
     print(f"Data type: {args.type}")
+    print(f"Select same criterion: {args.select_the_same_criterion}")
+    if args.plot:
+        print(f"Plot type: {args.plot_type}")
     
     dataset = load_dataset(args.input_repo)
     
@@ -338,9 +396,9 @@ def main():
     
     print("Processing dataset...")
     # Process dataset with the requested number of responses
-    preference_data = process_dataset(dataset, args.n_response)
-    
-    if args.plot:
+    preference_data = process_dataset(dataset, args.n_response, args.select_the_same_criterion)
+    print('Number of preference data: ', len(preference_data[(0, 1)]))
+    if args.plot:   
         print(f"Running analysis for n_response from 2 to {args.n_response}...")
         
         # Collect results for different numbers of responses
@@ -359,38 +417,71 @@ def main():
             no_dominant_percentages = [r['no_dominant_percentage'] for r in plot_results]
             intransitivity_percentages = [r['intransitivity_percentage'] for r in plot_results]
             
-            # Create the plot
-            fig, ax1 = plt.subplots(figsize=(10, 6))
+            # Create the plot based on plot_type
+            if args.plot_type == 'both':
+                # Create dual-axis plot for both metrics
+                fig, ax1 = plt.subplots(figsize=(10, 6))
+                
+                # Plot no-dominant percentage
+                color = 'tab:red'
+                ax1.set_xlabel('Number of Responses')
+                ax1.set_ylabel('No Condorcet Winner (%)', color=color)
+                line1 = ax1.plot(n_responses, no_dominant_percentages, 'o-', color=color, linewidth=2, markersize=6, label='No Condorcet Winner')
+                ax1.tick_params(axis='y', labelcolor=color)
+                ax1.grid(True, alpha=0.3)
+                
+                # Create second y-axis for intransitivity percentage
+                ax2 = ax1.twinx()
+                color = 'tab:blue'
+                ax2.set_ylabel('Intransitivity (%)', color=color)
+                line2 = ax2.plot(n_responses, intransitivity_percentages, 's-', color=color, linewidth=2, markersize=6, label='Intransitivity')
+                ax2.tick_params(axis='y', labelcolor=color)
+                
+                # Add legend
+                lines = line1 + line2
+                labels = [l.get_label() for l in lines]
+                ax1.legend(lines, labels, loc='upper left')
+                
+                # Set title
+                plt.title('No Condorcet Winner vs Intransitivity by Number of Responses', fontsize=14, pad=20)
+                
+            elif args.plot_type == 'condorcet':
+                # Plot only Condorcet winner data
+                fig, ax1 = plt.subplots(figsize=(10, 6))
+                
+                color = 'tab:red'
+                ax1.set_xlabel('Number of Responses')
+                ax1.set_ylabel('No Condorcet Winner (%)', color=color)
+                ax1.plot(n_responses, no_dominant_percentages, 'o-', color=color, linewidth=2, markersize=6, label='No Condorcet Winner')
+                ax1.tick_params(axis='y', labelcolor=color)
+                ax1.grid(True, alpha=0.3)
+                ax1.legend(loc='upper left')
+                
+                # Set title
+                plt.title('No Condorcet Winner by Number of Responses', fontsize=14, pad=20)
+                
+            elif args.plot_type == 'intransitivity':
+                # Plot only intransitivity data
+                fig, ax1 = plt.subplots(figsize=(10, 6))
+                
+                color = 'tab:blue'
+                ax1.set_xlabel('Number of Responses')
+                ax1.set_ylabel('Intransitivity (%)', color=color)
+                ax1.plot(n_responses, intransitivity_percentages, 's-', color=color, linewidth=2, markersize=6, label='Intransitivity')
+                ax1.tick_params(axis='y', labelcolor=color)
+                ax1.grid(True, alpha=0.3)
+                ax1.legend(loc='upper left')
+                
+                # Set title
+                plt.title('Intransitivity by Number of Responses', fontsize=14, pad=20)
             
-            # Plot no-dominant percentage
-            color = 'tab:red'
-            ax1.set_xlabel('Number of Responses')
-            ax1.set_ylabel('No Condorcet Winner (%)', color=color)
-            line1 = ax1.plot(n_responses, no_dominant_percentages, 'o-', color=color, linewidth=2, markersize=6, label='No Condorcet Winner')
-            ax1.tick_params(axis='y', labelcolor=color)
-            ax1.grid(True, alpha=0.3)
-            
-            # Create second y-axis for intransitivity percentage
-            ax2 = ax1.twinx()
-            color = 'tab:blue'
-            ax2.set_ylabel('Intransitivity (%)', color=color)
-            line2 = ax2.plot(n_responses, intransitivity_percentages, 's-', color=color, linewidth=2, markersize=6, label='Intransitivity')
-            ax2.tick_params(axis='y', labelcolor=color)
-            
-            # Add legend
-            lines = line1 + line2
-            labels = [l.get_label() for l in lines]
-            ax1.legend(lines, labels, loc='upper left')
-            
-            # Set title and format
-            plt.title('No Condorcet Winner vs Intransitivity by Number of Responses', fontsize=14, pad=20)
+            # Common formatting
             ax1.set_xticks(n_responses)
-            
             plt.tight_layout()
             
-            # Save the plot
-            plot_filename = f"dominance_intransitivity_plot_{args.type}.png"
-            plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+            # Save the plot with plot_type in filename
+            plot_filename = f"dominance_intransitivity_plot_{args.type}_{args.plot_type}_{args.select_the_same_criterion}.pdf"
+            plt.savefig(plot_filename, format='pdf', bbox_inches='tight')
             print(f"\nPlot saved as: {plot_filename}")
             
             # Show the plot
