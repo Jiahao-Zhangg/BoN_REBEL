@@ -358,14 +358,11 @@ def score_dataset(ds: Dataset, beta: float) -> float:
 
     prompt_vals: List[float] = []
     for p, rows in grouped.items():
-        # For each base response y' index b, compute P(x,y')
-        exp_terms: List[float] = []
-        for b in range(n_base):
-            # For each check row: average over model responses a of judge_{a}_{b}
-            per_check_avgs: List[float] = []
-            for row in rows:
+        check_objectives: List[float] = []
+        for row in rows:
+            base_exp_terms: List[float] = []
+            for b in range(n_base):
                 vals: List[float] = []
-                # Prefer mean; fallback to majority
                 for a in range(n_model):
                     mean_key = f"judge_{a}_{b}_mean"
                     maj_key = f"judge_{a}_{b}_majority"
@@ -375,17 +372,21 @@ def score_dataset(ds: Dataset, beta: float) -> float:
                     if values:
                         vals.extend(values)
                 if vals:
-                    per_check_avgs.append(sum(vals) / len(vals))
-            if per_check_avgs:
-                P_xy = min(per_check_avgs)
-                exp_terms.append(math.exp(-P_xy / beta))
-        if exp_terms:
-            prompt_vals.append(sum(exp_terms) / len(exp_terms))
+                    expected_score = sum(vals) / len(vals)
+                    base_exp_terms.append(math.exp(-expected_score / beta))
+            if not base_exp_terms:
+                continue
+            avg_exp = sum(base_exp_terms) / len(base_exp_terms)
+            if avg_exp <= 0:
+                continue
+            check_objectives.append(-beta * math.log(avg_exp))
+        if check_objectives:
+            prompt_vals.append(min(check_objectives))
 
     if not prompt_vals:
         return float('nan')
 
-    return -beta * (sum(prompt_vals) / len(prompt_vals))
+    return sum(prompt_vals) / len(prompt_vals)
 
 
 def score(repo_id: str, beta: float) -> float:
