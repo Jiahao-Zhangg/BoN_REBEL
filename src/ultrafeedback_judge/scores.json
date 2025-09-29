@@ -1,0 +1,16 @@
+{
+  "checkpoints": [
+    "Qwen/Qwen2.5-3B-Instruct",
+    "zjhhhh/qwen2.5_3B_Instruct_multi_gap_seed_555134_beta_1_eta_1e4_step_101",
+    "zjhhhh/qwen2.5_3B_Instruct_multi_gap_seed_555134_beta_1_eta_1e4_step_201",
+    "zjhhhh/qwen2.5_3B_Instruct_multi_gap_seed_555134_beta_1_eta_1e4_step_301",
+    "zjhhhh/qwen2.5_3B_Instruct_multi_gap_seed_555134_beta_1_eta_1e4_step_382_final"
+  ],
+  "scores": [
+    -0.6785531951665431,
+    -0.6838020137171035,
+    -0.6750522287005062,
+    -0.66977386440647,
+    -0.6725074088060204
+  ]
+}
