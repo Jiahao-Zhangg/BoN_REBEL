@@ -53,7 +53,7 @@ def main():
     # dataset
     dataset = load_dataset(args.prompts, split='train')
     if args.end_idx != -1:
-        dataset = dataset.select(range(args.start_idx, args.end_idx))
+        dataset = dataset.select(range(args.start_idx, min(args.end_idx, len(dataset))))
 
     # prompts for llm
     prompts = [tokenizer.apply_chat_template(get_message(row['prompt']), tokenize=False, add_generation_prompt=True) for row in tqdm(dataset)]
