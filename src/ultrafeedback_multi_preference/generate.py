@@ -73,7 +73,7 @@ def main():
         dataset = dataset.add_column(f"response_{p}", output)
 
     # clean and push
-    columns = ["prompt"] + [f"response_{i}" for i in range(total_pairs)]
+    columns = ["prompt", "requirements"] + [f"response_{i}" for i in range(total_pairs)]
     dataset = dataset.select_columns(columns)
     dataset.push_to_hub(args.output_repo)
 
