@@ -18,33 +18,42 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def download_datasets():
-    """Download both datasets from HuggingFace Hub."""
-    logger.info("Downloading zjhhhh/Qwen3b dataset...")
-    qwen_dataset = load_dataset("zjhhhh/Qwen3b", split="train")
-    
-    logger.info("Downloading viswavi/wildchecklists dataset...")
-    try:
-        wildchecklists_dataset = load_dataset("viswavi/wildchecklists", split="train")
-    except ValueError as e:
-        if "Feature type 'List' not found" in str(e):
-            logger.warning("Feature type compatibility issue detected. Trying alternative loading method...")
-            try:
-                # Try loading without specifying split first, then select train
-                wildchecklists_full = load_dataset("viswavi/wildchecklists")
-                wildchecklists_dataset = wildchecklists_full["train"]
-            except Exception as e2:
-                logger.warning(f"Alternative method failed: {e2}")
-                # Try loading with trust_remote_code
+def download_datasets(requirements_source: str = "wild", qwen_repo_id: str = "zjhhhh/Qwen3b"):
+    """Download necessary datasets from HuggingFace Hub.
+
+    qwen_repo_id controls which Qwen-like dataset to use.
+    If requirements_source == 'qwen', only download Qwen dataset and skip Wildchecklists.
+    If requirements_source == 'wild', download both datasets.
+    """
+    logger.info(f"Downloading {qwen_repo_id} dataset...")
+    qwen_dataset = load_dataset(qwen_repo_id, split="train")
+
+    wildchecklists_dataset = None
+    if requirements_source == "wild":
+        logger.info("Downloading viswavi/wildchecklists dataset...")
+        try:
+            wildchecklists_dataset = load_dataset("viswavi/wildchecklists", split="train")
+        except ValueError as e:
+            if "Feature type 'List' not found" in str(e):
+                logger.warning("Feature type compatibility issue detected. Trying alternative loading method...")
                 try:
-                    wildchecklists_dataset = load_dataset("viswavi/wildchecklists", split="train", trust_remote_code=True)
-                except Exception as e3:
-                    logger.error(f"All loading methods failed. Last error: {e3}")
-                    # Try to download and convert manually
-                    wildchecklists_dataset = load_dataset_manually("viswavi/wildchecklists")
-        else:
-            raise e
-    
+                    # Try loading without specifying split first, then select train
+                    wildchecklists_full = load_dataset("viswavi/wildchecklists")
+                    wildchecklists_dataset = wildchecklists_full["train"]
+                except Exception as e2:
+                    logger.warning(f"Alternative method failed: {e2}")
+                    # Try loading with trust_remote_code
+                    try:
+                        wildchecklists_dataset = load_dataset("viswavi/wildchecklists", split="train", trust_remote_code=True)
+                    except Exception as e3:
+                        logger.error(f"All loading methods failed. Last error: {e3}")
+                        # Try to download and convert manually
+                        wildchecklists_dataset = load_dataset_manually("viswavi/wildchecklists")
+            else:
+                raise e
+    else:
+        logger.info("Skipping wildchecklists download (using requirements from Qwen dataset)")
+
     return qwen_dataset, wildchecklists_dataset
 
 def load_dataset_manually(dataset_name):
@@ -101,8 +110,8 @@ def load_dataset_manually(dataset_name):
         logger.error(f"Could not load dataset {dataset_name}: {e}")
         raise
 
-def verify_dataset_structure(qwen_dataset, wildchecklists_dataset):
-    """Verify the structure of both datasets."""
+def verify_dataset_structure(qwen_dataset, wildchecklists_dataset, requirements_source: str):
+    """Verify the structure of datasets needed for the chosen requirements source."""
     logger.info("Verifying dataset structures...")
     
     # Check Qwen dataset columns
@@ -119,43 +128,65 @@ def verify_dataset_structure(qwen_dataset, wildchecklists_dataset):
     if len(response_columns) != 20:
         logger.warning(f"Expected 20 response columns, found {len(response_columns)}")
     
-    # Check wildchecklists dataset columns
-    wildcheck_columns = list(wildchecklists_dataset.features.keys())
-    logger.info(f"Wildchecklists dataset columns: {wildcheck_columns}")
-    
-    if 'prompt' not in wildcheck_columns:
-        raise ValueError("Wildchecklists dataset missing 'prompt' column")
-    
-    if 'requirements' not in wildcheck_columns:
-        raise ValueError("Wildchecklists dataset missing 'requirements' column")
-    
-    # Check if prompts match
-    logger.info("Checking if prompts match between datasets...")
-    qwen_prompts = set(qwen_dataset['prompt'])
-    wildcheck_prompts = set(wildchecklists_dataset['prompt'])
-    
-    if len(qwen_dataset) != len(wildchecklists_dataset):
-        logger.warning(f"Dataset lengths differ: Qwen={len(qwen_dataset)}, Wildchecklists={len(wildchecklists_dataset)}")
-    
-    # Check for prompt overlap
-    common_prompts = qwen_prompts.intersection(wildcheck_prompts)
-    logger.info(f"Common prompts: {len(common_prompts)} out of {len(qwen_prompts)} Qwen prompts and {len(wildcheck_prompts)} wildcheck prompts")
+    if requirements_source == 'qwen':
+        if 'requirements' not in qwen_columns:
+            raise ValueError("Qwen dataset missing 'requirements' column, but requirements_source is 'qwen'")
+        logger.info("Using requirements from Qwen dataset; skipping wildchecklists validation")
+    else:
+        if wildchecklists_dataset is None:
+            raise ValueError("requirements_source is 'wild' but wildchecklists_dataset is None")
+        # Check wildchecklists dataset columns
+        wildcheck_columns = list(wildchecklists_dataset.features.keys())
+        logger.info(f"Wildchecklists dataset columns: {wildcheck_columns}")
+        
+        if 'prompt' not in wildcheck_columns:
+            raise ValueError("Wildchecklists dataset missing 'prompt' column")
+        
+        if 'requirements' not in wildcheck_columns:
+            raise ValueError("Wildchecklists dataset missing 'requirements' column")
+        
+        # Check if prompts match
+        logger.info("Checking if prompts match between datasets...")
+        qwen_prompts = set(qwen_dataset['prompt'])
+        wildcheck_prompts = set(wildchecklists_dataset['prompt'])
+        
+        if len(qwen_dataset) != len(wildchecklists_dataset):
+            logger.warning(f"Dataset lengths differ: Qwen={len(qwen_dataset)}, Wildchecklists={len(wildchecklists_dataset)}")
+        
+        # Check for prompt overlap
+        common_prompts = qwen_prompts.intersection(wildcheck_prompts)
+        logger.info(f"Common prompts: {len(common_prompts)} out of {len(qwen_prompts)} Qwen prompts and {len(wildcheck_prompts)} wildcheck prompts")
     
     return response_columns
 
-def shuffle_and_select_responses(response_columns: List[str], seed: int = 42) -> Dict[str, str]:
+def shuffle_and_select_responses(
+    response_columns: List[str],
+    seed: int = 42,
+    num_selection: int = 3,
+    num_base: int = 2,
+    num_current: int = 2,
+) -> Dict[str, str]:
     """
-    Shuffle the 20 response columns and select:
-    - 3 for selection_response_i (i=1,2,3)
-    - 2 for base_response_i (i=1,2)  
-    - 2 for current_response_i (i=1,2)
+    Shuffle the response columns and select configurable counts for each group:
+    - num_selection for selection_response_i (i=1..num_selection)
+    - num_base for base_response_i (i=1..num_base)
+    - num_current for current_response_i (i=1..num_current)
     """
     random.seed(seed)
     np.random.seed(seed)
     
-    # Ensure we have exactly 20 response columns
+    # Ensure we have exactly 20 response columns (dataset contract)
     if len(response_columns) != 20:
         raise ValueError(f"Expected 20 response columns, got {len(response_columns)}")
+
+    if any(x < 0 for x in (num_selection, num_base, num_current)):
+        raise ValueError("num_selection, num_base, and num_current must be >= 0")
+    total_requested = num_selection + num_base + num_current
+    if total_requested > len(response_columns):
+        raise ValueError(
+            f"Requested {total_requested} columns (selection={num_selection}, base={num_base}, current={num_current}) "
+            f"but only {len(response_columns)} available"
+        )
     
     # Shuffle the response columns
     shuffled_columns = response_columns.copy()
@@ -166,17 +197,19 @@ def shuffle_and_select_responses(response_columns: List[str], seed: int = 42) ->
     base_mapping = {}
     current_mapping = {}
     
-    # First 3 for selection_response
-    for i in range(3):
+    # First num_selection for selection_response
+    for i in range(num_selection):
         selection_mapping[f'selection_response_{i+1}'] = shuffled_columns[i]
-    
-    # Next 2 for base_response  
-    for i in range(2):
-        base_mapping[f'base_response_{i+1}'] = shuffled_columns[3 + i]
-    
-    # Next 2 for current_response
-    for i in range(2):
-        current_mapping[f'current_response_{i+1}'] = shuffled_columns[5 + i]
+
+    # Next num_base for base_response
+    base_start = num_selection
+    for i in range(num_base):
+        base_mapping[f'base_response_{i+1}'] = shuffled_columns[base_start + i]
+
+    # Next num_current for current_response
+    current_start = num_selection + num_base
+    for i in range(num_current):
+        current_mapping[f'current_response_{i+1}'] = shuffled_columns[current_start + i]
     
     # Combine all mappings
     all_mappings = {**selection_mapping, **base_mapping, **current_mapping}
@@ -187,30 +220,37 @@ def shuffle_and_select_responses(response_columns: List[str], seed: int = 42) ->
     
     return all_mappings
 
-def create_merged_dataset(qwen_dataset, wildchecklists_dataset, response_mappings: Dict[str, str]):
-    """Create the merged dataset with selected columns."""
+def create_merged_dataset(qwen_dataset, wildchecklists_dataset, response_mappings: Dict[str, str], requirements_source: str):
+    """Create the final dataset, sourcing 'requirements' per requirements_source."""
     logger.info("Creating merged dataset...")
     
     # Convert datasets to pandas for easier manipulation
     qwen_df = qwen_dataset.to_pandas()
-    wildcheck_df = wildchecklists_dataset.to_pandas()
-    
-    # Merge on prompt (assuming prompts are in the same order)
-    logger.info("Merging datasets on prompt...")
-    merged_df = pd.merge(qwen_df, wildcheck_df[['prompt', 'requirements']], 
-                        on='prompt', how='inner')
-    
-    logger.info(f"Merged dataset size: {len(merged_df)} rows")
-    
-    # Create the final dataset with selected columns
-    final_data = {
-        'prompt': merged_df['prompt'].tolist(),
-        'requirements': merged_df['requirements'].tolist()
-    }
-    
-    # Add the selected response columns with new names
-    for new_col_name, old_col_name in response_mappings.items():
-        final_data[new_col_name] = merged_df[old_col_name].tolist()
+    final_data = {}
+    if requirements_source == 'wild':
+        wildcheck_df = wildchecklists_dataset.to_pandas()
+        # Merge on prompt (assuming prompts are in the same order)
+        logger.info("Merging datasets on prompt...")
+        merged_df = pd.merge(qwen_df, wildcheck_df[['prompt', 'requirements']], 
+                            on='prompt', how='inner')
+        logger.info(f"Merged dataset size: {len(merged_df)} rows")
+        # Create the final dataset with selected columns
+        final_data = {
+            'prompt': merged_df['prompt'].tolist(),
+            'requirements': merged_df['requirements'].tolist()
+        }
+        # Add the selected response columns with new names from merged_df (which includes qwen columns)
+        for new_col_name, old_col_name in response_mappings.items():
+            final_data[new_col_name] = merged_df[old_col_name].tolist()
+    else:
+        # Use requirements directly from qwen_df; no merge
+        logger.info("Using requirements from Qwen dataset; no merge performed")
+        final_data = {
+            'prompt': qwen_df['prompt'].tolist(),
+            'requirements': qwen_df['requirements'].tolist()
+        }
+        for new_col_name, old_col_name in response_mappings.items():
+            final_data[new_col_name] = qwen_df[old_col_name].tolist()
     
     # Create HuggingFace dataset
     final_dataset = Dataset.from_dict(final_data)
@@ -245,26 +285,42 @@ def main():
                        help="HuggingFace token for uploading (if not set in environment)")
     parser.add_argument("--dry-run", action="store_true", 
                        help="Don't upload, just create and save locally")
+    parser.add_argument("--requirements-source", type=str, choices=["wild", "qwen"], default="wild",
+                       help="Source of 'requirements' field: 'wild' (merge with wildchecklists) or 'qwen' (use Qwen dataset)")
+    parser.add_argument("--qwen-dataset", type=str, default="zjhhhh/Qwen3b",
+                       help="Repo id of the Qwen-like dataset to load (e.g., 'zjhhhh/Qwen3b')")
+    parser.add_argument("--num-selection", type=int, default=3,
+                       help="Number of selection responses to include (default: 3)")
+    parser.add_argument("--num-base", type=int, default=2,
+                       help="Number of base responses to include (default: 2)")
+    parser.add_argument("--num-current", type=int, default=2,
+                       help="Number of current responses to include (default: 2)")
     
     args = parser.parse_args()
     
     try:
         # Download datasets
-        qwen_dataset, wildchecklists_dataset = download_datasets()
+        qwen_dataset, wildchecklists_dataset = download_datasets(requirements_source=args.requirements_source, qwen_repo_id=args.qwen_dataset)
         
         # Verify structure
-        response_columns = verify_dataset_structure(qwen_dataset, wildchecklists_dataset)
+        response_columns = verify_dataset_structure(qwen_dataset, wildchecklists_dataset, requirements_source=args.requirements_source)
         
         # Shuffle and select response columns
-        response_mappings = shuffle_and_select_responses(response_columns, seed=args.seed)
+        response_mappings = shuffle_and_select_responses(
+            response_columns,
+            seed=args.seed,
+            num_selection=args.num_selection,
+            num_base=args.num_base,
+            num_current=args.num_current,
+        )
         
         # Create merged dataset
-        final_dataset = create_merged_dataset(qwen_dataset, wildchecklists_dataset, response_mappings)
+        final_dataset = create_merged_dataset(qwen_dataset, wildchecklists_dataset, response_mappings, requirements_source=args.requirements_source)
         
         # Save locally first
-        local_path = f"{args.dataset_name}_local"
-        final_dataset.save_to_disk(local_path)
-        logger.info(f"Saved dataset locally to {local_path}")
+        # local_path = f"{args.dataset_name}_local"
+        # final_dataset.save_to_disk(local_path)
+        # logger.info(f"Saved dataset locally to {local_path}")
         
         if not args.dry_run:
             # Upload to HuggingFace Hub
