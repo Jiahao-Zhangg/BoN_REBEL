@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 from typing import List, Dict, Any
+import re
 from datasets import load_dataset, Dataset
 from transformers import AutoTokenizer
 from tqdm import tqdm
@@ -71,6 +72,49 @@ def expand_dataset_requirements(dataset):
 
     return Dataset.from_list(expanded_data)
 
+def parse_requirements_checks(requirements_str: str) -> List[str]:
+    """Parse a requirements string and return a list of 'check' texts.
+
+    The parser is tolerant to formatting variations, including:
+    - Different line endings (\r\n or \n)
+    - Leading spaces before numbering
+    - Missing trailing "/100)" or even missing (importance: ...) segments
+    - Entire string without numbering treated as a single requirement
+    """
+    if not isinstance(requirements_str, str):
+        return []
+
+    text = requirements_str.replace("\r\n", "\n").strip()
+    if not text:
+        return []
+
+    matches = list(re.finditer(r"(?m)^\s*(\d+)\)\s*", text))
+    segments: List[str] = []
+
+    if matches:
+        for i, m in enumerate(matches):
+            start = m.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            segment = text[start:end].strip()
+            if not segment:
+                continue
+            if '(importance:' in segment:
+                check_text = segment.split('(importance:')[0].strip()
+            else:
+                check_text = segment.strip()
+            if check_text:
+                segments.append(check_text)
+    else:
+        segment = text
+        if '(importance:' in segment:
+            check_text = segment.split('(importance:')[0].strip()
+        else:
+            check_text = segment.strip()
+        if check_text:
+            segments.append(check_text)
+
+    return segments
+
 def calculate_prompt_length(tokenizer, template, row, response_a_col, response_b_col):
     """Calculate the token length of a prompt when formatted with the template."""
     try:
@@ -93,7 +137,11 @@ def calculate_prompt_length(tokenizer, template, row, response_a_col, response_b
         return float('inf')  # Return very large number to filter out problematic rows
 
 def filter_by_length(dataset, tokenizer, templates, max_length, selection_pairs, base_pairs, current_pairs):
-    """Filter dataset based on prompt length constraints."""
+    """Efficiently filter dataset at the prompt level using batched tokenization.
+
+    A prompt row is kept if and only if, for all of its requirements, all
+    selection/base and current/base pairs format within the max_length.
+    """
     # Use the 5score explanation template as it's the longest/most complex
     template = templates.get("preference_5score", templates.get("preference_binary", ""))
     if not template:
@@ -107,49 +155,119 @@ def filter_by_length(dataset, tokenizer, templates, max_length, selection_pairs,
     base_responses = [f'base_response_{j+1}' for j in range(base_pairs)]
     current_responses = [f'current_response_{k+1}' for k in range(current_pairs)]
     
-    valid_indices = []
-    max_lengths = []
-    
-    print("Calculating prompt lengths for all pairs...")
-    
+    valid_indices = []  # indices into the original (non-expanded) dataset
+    max_lengths = []    # track the max prompt length per kept prompt for stats
+
+    print("Preparing formatted prompts for all pairs (batched tokenization)...")
+
+    all_formatted_prompts: List[str] = []
+    prompt_row_indices: List[int] = []
+    row_prompt_count = [0] * len(dataset)
+
     for idx, row in enumerate(tqdm(dataset)):
-        row_max_length = 0
-        valid_row = True
-        
-        # Check selection vs base pairs
-        for selection_col in selection_responses:
-            for base_col in base_responses:
-                if selection_col in row and base_col in row:
-                    length = calculate_prompt_length(tokenizer, template, row, selection_col, base_col)
-                    row_max_length = max(row_max_length, length)
-                    if length > max_length:
-                        valid_row = False
-                        break
-            if not valid_row:
-                break
-        
-        # Check current vs base pairs if row is still valid
-        if valid_row:
+        try:
+            checks = parse_requirements_checks(row.get('requirements', ''))
+        except Exception as e:
+            print(f"Error parsing requirements for row {idx}: {e}")
+            checks = []
+
+        for check_text in checks:
+            temp_row = dict(row)
+            temp_row['check'] = check_text
+
+            # selection vs base
+            for selection_col in selection_responses:
+                for base_col in base_responses:
+                    if selection_col in temp_row and base_col in temp_row:
+                        try:
+                            formatted_prompt = template.format(
+                                prompt=temp_row['prompt'],
+                                response_a=temp_row[selection_col],
+                                response_b=temp_row[base_col],
+                                check=temp_row['check']
+                            )
+                            message = [{"role": "user", "content": formatted_prompt}]
+                            chat_formatted = tokenizer.apply_chat_template(
+                                message, tokenize=False, add_generation_prompt=True
+                            )
+                            all_formatted_prompts.append(chat_formatted)
+                            prompt_row_indices.append(idx)
+                            row_prompt_count[idx] += 1
+                        except Exception:
+                            continue
+
+            # current vs base
             for current_col in current_responses:
                 for base_col in base_responses:
-                    if current_col in row and base_col in row:
-                        length = calculate_prompt_length(tokenizer, template, row, current_col, base_col)
-                        row_max_length = max(row_max_length, length)
-                        if length > max_length:
-                            valid_row = False
-                            break
-                if not valid_row:
-                    break
-        
-        if valid_row:
-            valid_indices.append(idx)
-            max_lengths.append(row_max_length)
+                    if current_col in temp_row and base_col in temp_row:
+                        try:
+                            formatted_prompt = template.format(
+                                prompt=temp_row['prompt'],
+                                response_a=temp_row[current_col],
+                                response_b=temp_row[base_col],
+                                check=temp_row['check']
+                            )
+                            message = [{"role": "user", "content": formatted_prompt}]
+                            chat_formatted = tokenizer.apply_chat_template(
+                                message, tokenize=False, add_generation_prompt=True
+                            )
+                            all_formatted_prompts.append(chat_formatted)
+                            prompt_row_indices.append(idx)
+                            row_prompt_count[idx] += 1
+                        except Exception:
+                            continue
+
+    print(f"Total formatted prompts prepared: {len(all_formatted_prompts)}")
+
+    # Batched tokenization to get lengths
+    row_max_length = [0] * len(dataset)
+    row_valid = [True] * len(dataset)
+
+    if all_formatted_prompts:
+        chunk_size = 2048
+        total = len(all_formatted_prompts)
+        num_chunks = (total + chunk_size - 1) // chunk_size
+        for start in tqdm(range(0, total, chunk_size), total=num_chunks, desc="Tokenizing prompts", dynamic_ncols=True):
+            end = min(start + chunk_size, total)
+            batch_texts = all_formatted_prompts[start:end]
+            batch_indices = prompt_row_indices[start:end]
+
+            enc = tokenizer(
+                batch_texts,
+                add_special_tokens=True,
+                return_length=True,
+                padding=False,
+                truncation=False,
+            )
+
+            lengths = enc.get('length')
+            if lengths is None:
+                input_ids = enc.get('input_ids', [])
+                lengths = [len(x) for x in input_ids]
+
+            for r_idx, l in zip(batch_indices, lengths):
+                if l is None:
+                    continue
+                if l > row_max_length[r_idx]:
+                    row_max_length[r_idx] = l
+                if l > max_length:
+                    row_valid[r_idx] = False
+
+    # Rows with no evaluated prompts are considered invalid
+    for i in range(len(dataset)):
+        if row_prompt_count[i] == 0:
+            row_valid[i] = False
+
+    for i in range(len(dataset)):
+        if row_valid[i]:
+            valid_indices.append(i)
+            max_lengths.append(row_max_length[i])
     
     print(f"Filtered {len(valid_indices)} valid rows out of {len(dataset)} total rows")
     
-    # Filter dataset
+    # Filter dataset (prompt-level)
     filtered_dataset = dataset.select(valid_indices)
-    
+
     return filtered_dataset, max_lengths
 
 def main():
@@ -168,11 +286,6 @@ def main():
         indices = random.sample(range(len(dataset)), args.n_sample)
         dataset = dataset.select(indices)
         print(f"Randomly sampled {args.n_sample} examples")
-    
-    # Expand dataset by splitting requirements
-    print("Expanding dataset by splitting requirements...")
-    dataset = expand_dataset_requirements(dataset)
-    print(f"Expanded dataset size: {len(dataset)}")
     
     # Load prompt templates
     print("Loading prompt templates...")
@@ -194,8 +307,7 @@ def main():
     print("FILTERING RESULTS")
     print("="*50)
     print(f"Original sampled dataset size: {args.n_sample}")
-    print(f"After expanding requirements: {len(dataset)}")
-    print(f"After length filtering: {len(filtered_dataset)}")
+    print(f"After length filtering (prompt-level): {len(filtered_dataset)}")
     print(f"Filtering ratio: {len(filtered_dataset)/len(dataset)*100:.2f}%")
     
     if max_lengths:
