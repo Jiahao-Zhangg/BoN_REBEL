@@ -25,6 +25,11 @@ def parse_arguments():
     parser.add_argument("--slicing_idx", type=int, default=24)
     parser.add_argument("--score_type", type=str, default="mean", choices=["mean", "majority"],
                         help="Use all mean or all majority score vectors when computing preferences")
+    parser.add_argument("--output_repo_prefix", type=str, default=None,
+                        help="If set, use this as the repo prefix for push_to_hub instead of input_repo")
+    parser.add_argument("--test_size", type=int, default=1000, help="Number of examples for test split")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for splitting")
+    parser.add_argument("--limit_rows", type=int, default=0, help="If >0, use only first N rows for debugging")
     return parser.parse_args()
 
 
@@ -87,6 +92,11 @@ def main():
     
     # process dataset
     print('initial length:', len(dataset))
+
+    if args.limit_rows and args.limit_rows > 0:
+        n = min(args.limit_rows, len(dataset))
+        dataset = dataset.select(range(n))
+        print(f'limited to first {n} rows')
 
     if "Qwen" in args.model:
         slicing_idx_used = SYS_PROMPT_LEN
@@ -287,9 +297,9 @@ def main():
     dataset = dataset.filter(lambda row: filter_same_responses(row))
     print('filtered same responses:', len(dataset))
 
-    dataset = dataset.train_test_split(test_size=1000, shuffle=True)
-    model_name = args.model.split('/')[-1]
-    dataset.push_to_hub(args.input_repo + '_' + args.score_type +'_beta_'+str(args.beta) + '_multi_expand_tokenized')
+    dataset = dataset.train_test_split(test_size=args.test_size, shuffle=True, seed=args.seed)
+    repo_prefix = args.output_repo_prefix if args.output_repo_prefix else args.input_repo
+    dataset.push_to_hub(repo_prefix + '_' + args.score_type +'_beta_'+str(args.beta) + '_multi_expand_tokenized')
 
 
 

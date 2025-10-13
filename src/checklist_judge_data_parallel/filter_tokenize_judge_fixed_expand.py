@@ -38,6 +38,11 @@ def parse_arguments():
         ),
         help="Exact check text to locate per prompt; we use only this check's coordinate.",
     )
+    parser.add_argument("--output_repo_prefix", type=str, default=None,
+                        help="If set, use this as the repo prefix for push_to_hub instead of input_repo")
+    parser.add_argument("--test_size", type=int, default=1000, help="Number of examples for test split")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for splitting")
+    parser.add_argument("--limit_rows", type=int, default=0, help="If >0, use only first N rows for debugging")
     return parser.parse_args()
 
 
@@ -151,6 +156,11 @@ def main():
 
     dataset = load_dataset(args.input_repo, split='train')
     print('initial length:', len(dataset))
+
+    if args.limit_rows and args.limit_rows > 0:
+        n = min(args.limit_rows, len(dataset))
+        dataset = dataset.select(range(n))
+        print(f'limited to first {n} rows')
 
     # Filter overly long prompts
     dataset = dataset.filter(lambda row: tokenizer.apply_chat_template(
@@ -359,8 +369,9 @@ def main():
     print('filtered same responses:', len(dataset))
 
     # Split and push (keep naming consistent)
-    dataset = dataset.train_test_split(test_size=1000, shuffle=True)
-    dataset.push_to_hub(args.input_repo + '_' + args.score_type +'_beta_'+str(args.beta) + '_fixed_expand_tokenized')
+    dataset = dataset.train_test_split(test_size=args.test_size, shuffle=True, seed=args.seed)
+    repo_prefix = args.output_repo_prefix if args.output_repo_prefix else args.input_repo
+    dataset.push_to_hub(repo_prefix + '_' + args.score_type +'_beta_'+str(args.beta) + '_fixed_expand_tokenized')
 
 
 if __name__ == "__main__":

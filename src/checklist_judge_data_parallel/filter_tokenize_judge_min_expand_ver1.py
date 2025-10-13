@@ -15,23 +15,18 @@ SYS_PROMPT_LEN = 24
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Filter + tokenize using scalar judge scores (no fixed check).",
+        description="Filter + tokenize using the minimum value of averaged selection-base scores.",
     )
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
-    parser.add_argument("--input_repo", type=str, default="zjhhhh/whole_sw_maxlen_8192_nocheck_rescale",
-                        help="HF dataset repo to load (expects selection/current/base responses and scalar scores + requirements)")
+    parser.add_argument("--input_repo", type=str, default="zjhhhh/whole_sw_maxlen_8192_rescale",
+                        help="HF dataset repo to load (expects selection/current/base responses and score vectors + requirements)")
     parser.add_argument("--maxlen", type=int, default=2048)
     parser.add_argument("--maxlen_prompt", type=int, default=1024)
     parser.add_argument("--beta", type=float, default=1.0, help="beta parameter for A/B/g computation")
     parser.add_argument("--slicing_idx", type=int, default=24,
                         help="Fallback slicing index if model-specific detection not used")
     parser.add_argument("--score_type", type=str, default="mean", choices=["mean", "majority"],
-                        help="Use all mean or all majority scores when computing preferences")
-    parser.add_argument("--output_repo_prefix", type=str, default=None,
-                        help="If set, use this as the repo prefix for push_to_hub instead of input_repo")
-    parser.add_argument("--test_size", type=int, default=1000, help="Number of examples for test split")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for splitting")
-    parser.add_argument("--limit_rows", type=int, default=0, help="If >0, use only first N rows for debugging")
+                        help="Use all mean or all majority score vectors when computing preferences")
     return parser.parse_args()
 
 
@@ -91,11 +86,6 @@ def main():
 
     dataset = load_dataset(args.input_repo, split='train')
     print('initial length:', len(dataset))
-
-    if args.limit_rows and args.limit_rows > 0:
-        n = min(args.limit_rows, len(dataset))
-        dataset = dataset.select(range(n))
-        print(f'limited to first {n} rows')
 
     # Filter overly long prompts
     dataset = dataset.filter(lambda row: tokenizer.apply_chat_template(
@@ -172,7 +162,24 @@ def main():
     dataset = dataset.add_column("qwen_prompt", qwen_prompts)
     dataset = dataset.add_column("qwen_prompt_tokens", qwen_prompt_tokens)
 
-    # select chosen and reject using scalar judge scores
+    escaped_score_type = re.escape(args.score_type)
+    score_pattern = re.compile(rf"^selection_(\d+)_base_(\d+)_({escaped_score_type})$")
+    selection_ids = set()
+    base_ids = set()
+    for name in dataset.column_names:
+        match = score_pattern.match(name)
+        if match:
+            selection_ids.add(int(match.group(1)))
+            base_ids.add(int(match.group(2)))
+
+    selection_ids = sorted(selection_ids)
+    base_ids = sorted(base_ids)
+    if not selection_ids:
+        raise ValueError("Dataset is missing selection-base score columns for the specified score type.")
+    if not base_ids:
+        raise ValueError("Dataset is missing base indices for the specified score type.")
+
+    # select chosen and reject using minimum of averaged selection-base arrays
     expanded_data = {col: [] for col in dataset.column_names}
     expanded_data.update({
         "chosen": [],
@@ -188,44 +195,20 @@ def main():
     })
 
     for row in tqdm(dataset):
-        beta = args.beta
-
-        # Collect current vs base scalar scores per base model
-        current_base_scores = []
-        for base_j in range(1, 3):
-            rows = []
-            for cur_k in range(1, 3):
-                key = f"current_{cur_k}_base_{base_j}_{args.score_type}"
-                score = float(row[key])
-                rows.append(score)
-            current_base_scores.append(np.array(rows, dtype=float))
-
-        # Compute exp_terms using the scalar scores
-        exp_terms = []  # length 2
-        for cb in current_base_scores:
-            inner = np.sum(cb) / (beta * cb.size)
-            exp_terms.append(np.exp(-inner))
-
-        # Denominator A for all scores
-        A_value = exp_terms[0] + exp_terms[1]
-
-        # For each selection z, compute B and g
         g_values = []
-        for sel_i in range(1, 4):
-            p_z_vs_bases = []
-            for base_j in range(1, 3):
-                key = f"selection_{sel_i}_base_{base_j}_{args.score_type}"
-                score = float(row[key])
-                p_z_vs_bases.append(score)
-            B_value = p_z_vs_bases[0] * exp_terms[0] + p_z_vs_bases[1] * exp_terms[1]
-            g_z = B_value / A_value
-            g_values.append(float(g_z))
-
         selection_tokens = []
         selection_texts = []
-        for sel_i in range(1, 4):
+        for sel_id in selection_ids:
+            base_vectors = []
+            for base_id in base_ids:
+                key = f"selection_{sel_id}_base_{base_id}_{args.score_type}"
+                p_vec = np.array(row[key], dtype=float)
+                base_vectors.append(p_vec)
+            stacked = np.stack(base_vectors, axis=0)
+            average_vector = np.mean(stacked, axis=0)
+            g_values.append(float(np.min(average_vector)))
             sel_token = tokenizer.apply_chat_template(
-                get_message(response=row[f"selection_response_{sel_i}"]),
+                get_message(response=row[f"selection_response_{sel_id}"]),
                 add_generation_prompt=False,
                 tokenize=True,
                 padding='max_length',
@@ -243,28 +226,32 @@ def main():
                 eid = tokenizer.eos_token_id
                 assert (pid is None or last_id == pid) or (eid is None or last_id == eid), "Qwen selection last token should be PAD or EOS"
 
-        for pair in ((0, 1), (1, 2), (0, 2)):
-            higher_idx, lower_idx = pair
-            if g_values[higher_idx] < g_values[lower_idx]:
-                higher_idx, lower_idx = lower_idx, higher_idx
+        for idx_a in range(len(selection_ids)):
+            for idx_b in range(idx_a + 1, len(selection_ids)):
+                higher_idx, lower_idx = idx_a, idx_b
+                if g_values[higher_idx] < g_values[lower_idx]:
+                    higher_idx, lower_idx = lower_idx, higher_idx
 
-            for col in dataset.column_names:
-                expanded_data[col].append(row[col])
+                higher_sel_id = selection_ids[higher_idx]
+                lower_sel_id = selection_ids[lower_idx]
 
-            expanded_data["chosen"].append(row[f"selection_response_{higher_idx+1}"])
-            expanded_data["reject"].append(row[f"selection_response_{lower_idx+1}"])
+                for col in dataset.column_names:
+                    expanded_data[col].append(row[col])
 
-            expanded_data["qwen_chosen_tokens"].append(selection_tokens[higher_idx])
-            expanded_data["qwen_reject_tokens"].append(selection_tokens[lower_idx])
+                expanded_data["chosen"].append(row[f"selection_response_{higher_sel_id}"])
+                expanded_data["reject"].append(row[f"selection_response_{lower_sel_id}"])
 
-            expanded_data["qwen_chosen"].append(selection_texts[higher_idx])
-            expanded_data["qwen_reject"].append(selection_texts[lower_idx])
+                expanded_data["qwen_chosen_tokens"].append(selection_tokens[higher_idx])
+                expanded_data["qwen_reject_tokens"].append(selection_tokens[lower_idx])
 
-            expanded_data["chosen_reward"].append(float(g_values[higher_idx]))
-            expanded_data["reject_reward"].append(float(g_values[lower_idx]))
+                expanded_data["qwen_chosen"].append(selection_texts[higher_idx])
+                expanded_data["qwen_reject"].append(selection_texts[lower_idx])
 
-            expanded_data["g_chosen"].append(float(g_values[higher_idx]))
-            expanded_data["g_reject"].append(float(g_values[lower_idx]))
+                expanded_data["chosen_reward"].append(float(g_values[higher_idx]))
+                expanded_data["reject_reward"].append(float(g_values[lower_idx]))
+
+                expanded_data["g_chosen"].append(float(g_values[higher_idx]))
+                expanded_data["g_reject"].append(float(g_values[lower_idx]))
 
     dataset = Dataset.from_dict(expanded_data)
 
@@ -273,9 +260,8 @@ def main():
     print('filtered same responses:', len(dataset))
 
     # Split and push (keep naming consistent)
-    dataset = dataset.train_test_split(test_size=args.test_size, shuffle=True, seed=args.seed)
-    repo_prefix = args.output_repo_prefix if args.output_repo_prefix else args.input_repo
-    dataset.push_to_hub(repo_prefix + '_' + args.score_type + '_maxlenp_' + str(args.maxlen_prompt)+'_beta_'+str(args.beta) + '_nocheck_tokenized')
+    dataset = dataset.train_test_split(test_size=1000, shuffle=True)
+    dataset.push_to_hub(args.input_repo + '_' + args.score_type + '_maxlenp_' + str(args.maxlen_prompt)+'_beta_'+str(args.beta) + '_min_tokenized')
 
 
 if __name__ == "__main__":

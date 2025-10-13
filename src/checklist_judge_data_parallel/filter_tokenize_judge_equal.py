@@ -321,7 +321,8 @@ def main():
     print('filtered same responses:', len(dataset))
 
     dataset = dataset.train_test_split(test_size=1000, shuffle=True)
-    dataset.push_to_hub(args.input_repo + '_' + args.score_type +'_beta_'+ str(args.beta) + '_multi_equal_tokenized')
+    # dataset.push_to_hub(args.input_repo + '_' + args.score_type +'_beta_'+ str(args.beta) + '_multi_equal_tokenized')
+    dataset.push_to_hub('MisDrifter/multi_5selection_tokenized')
 
 
 if __name__ == "__main__":

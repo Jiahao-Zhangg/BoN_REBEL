@@ -15,7 +15,7 @@ SYS_PROMPT_LEN = 24
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Filter + tokenize using the minimum value of averaged selection-base scores.",
+        description="Filter + tokenize using worst-coordinate gradients from current/base scores.",
     )
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--input_repo", type=str, default="zjhhhh/whole_sw_maxlen_8192_rescale",
@@ -27,6 +27,11 @@ def parse_arguments():
                         help="Fallback slicing index if model-specific detection not used")
     parser.add_argument("--score_type", type=str, default="mean", choices=["mean", "majority"],
                         help="Use all mean or all majority score vectors when computing preferences")
+    parser.add_argument("--output_repo_prefix", type=str, default=None,
+                        help="If set, use this as the repo prefix for push_to_hub instead of input_repo")
+    parser.add_argument("--test_size", type=int, default=1000, help="Number of examples for test split")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for splitting")
+    parser.add_argument("--limit_rows", type=int, default=0, help="If >0, use only first N rows for debugging")
     return parser.parse_args()
 
 
@@ -86,6 +91,11 @@ def main():
 
     dataset = load_dataset(args.input_repo, split='train')
     print('initial length:', len(dataset))
+
+    if args.limit_rows and args.limit_rows > 0:
+        n = min(args.limit_rows, len(dataset))
+        dataset = dataset.select(range(n))
+        print(f'limited to first {n} rows')
 
     # Filter overly long prompts
     dataset = dataset.filter(lambda row: tokenizer.apply_chat_template(
@@ -163,23 +173,32 @@ def main():
     dataset = dataset.add_column("qwen_prompt_tokens", qwen_prompt_tokens)
 
     escaped_score_type = re.escape(args.score_type)
-    score_pattern = re.compile(rf"^selection_(\d+)_base_(\d+)_({escaped_score_type})$")
+    selection_score_pattern = re.compile(rf"^selection_(\d+)_base_(\d+)_({escaped_score_type})$")
+    current_score_pattern = re.compile(rf"^current_(\d+)_base_(\d+)_({escaped_score_type})$")
     selection_ids = set()
+    current_ids = set()
     base_ids = set()
     for name in dataset.column_names:
-        match = score_pattern.match(name)
-        if match:
-            selection_ids.add(int(match.group(1)))
-            base_ids.add(int(match.group(2)))
+        sel_match = selection_score_pattern.match(name)
+        if sel_match:
+            selection_ids.add(int(sel_match.group(1)))
+            base_ids.add(int(sel_match.group(2)))
+        cur_match = current_score_pattern.match(name)
+        if cur_match:
+            current_ids.add(int(cur_match.group(1)))
+            base_ids.add(int(cur_match.group(2)))
 
     selection_ids = sorted(selection_ids)
+    current_ids = sorted(current_ids)
     base_ids = sorted(base_ids)
     if not selection_ids:
         raise ValueError("Dataset is missing selection-base score columns for the specified score type.")
+    if not current_ids:
+        raise ValueError("Dataset is missing current-base score columns for the specified score type.")
     if not base_ids:
         raise ValueError("Dataset is missing base indices for the specified score type.")
 
-    # select chosen and reject using minimum of averaged selection-base arrays
+    # select chosen and reject using worst-coordinate gradients estimated from current/base pairs
     expanded_data = {col: [] for col in dataset.column_names}
     expanded_data.update({
         "chosen": [],
@@ -195,18 +214,57 @@ def main():
     })
 
     for row in tqdm(dataset):
+        # Step 1: estimate P(x, pi, pi') using current/base pairs and choose worst coordinate j*
+        current_vectors = []
+        vector_len = None
+        for cur_id in current_ids:
+            for base_id in base_ids:
+                key = f"current_{cur_id}_base_{base_id}_{args.score_type}"
+                raw_scores = row.get(key, None)
+                if raw_scores is None:
+                    continue
+                p_vec = np.array(raw_scores, dtype=float)
+                p_vec = np.atleast_1d(p_vec)
+                if vector_len is None:
+                    vector_len = p_vec.shape[0]
+                elif p_vec.shape[0] != vector_len:
+                    raise ValueError(
+                        f"Mismatched score vector length for {key}: expected {vector_len}, got {p_vec.shape[0]}"
+                    )
+                current_vectors.append(p_vec)
+        if not current_vectors:
+            raise ValueError("No current-base scores available to estimate P(x, pi, pi').")
+
+        stacked_current = np.stack(current_vectors, axis=0)
+        estimated_p = np.mean(stacked_current, axis=0)
+        j_star = int(np.argmin(estimated_p))
+
+        # Step 2: compute g(z) = E_{y'~pi_base}[P_{j*}(x, z, y')]
         g_values = []
         selection_tokens = []
         selection_texts = []
         for sel_id in selection_ids:
-            base_vectors = []
+            per_base_scores = []
             for base_id in base_ids:
                 key = f"selection_{sel_id}_base_{base_id}_{args.score_type}"
-                p_vec = np.array(row[key], dtype=float)
-                base_vectors.append(p_vec)
-            stacked = np.stack(base_vectors, axis=0)
-            average_vector = np.mean(stacked, axis=0)
-            g_values.append(float(np.min(average_vector)))
+                raw_scores = row.get(key, None)
+                if raw_scores is None:
+                    continue
+                p_vec = np.array(raw_scores, dtype=float)
+                p_vec = np.atleast_1d(p_vec)
+                if j_star >= p_vec.shape[0]:
+                    raise ValueError(
+                        f"Score vector for {key} missing coordinate j*={j_star} (length={p_vec.shape[0]})."
+                    )
+                per_base_scores.append(float(p_vec[j_star]))
+
+            if not per_base_scores:
+                raise ValueError(
+                    f"No selection-base scores available for selection {sel_id} to compute gradient."
+                )
+
+            g_values.append(float(np.mean(per_base_scores)))
+
             sel_token = tokenizer.apply_chat_template(
                 get_message(response=row[f"selection_response_{sel_id}"]),
                 add_generation_prompt=False,
@@ -260,8 +318,9 @@ def main():
     print('filtered same responses:', len(dataset))
 
     # Split and push (keep naming consistent)
-    dataset = dataset.train_test_split(test_size=1000, shuffle=True)
-    dataset.push_to_hub(args.input_repo + '_' + args.score_type + '_maxlenp_' + str(args.maxlen_prompt)+'_beta_'+str(args.beta) + '_min_tokenized')
+    dataset = dataset.train_test_split(test_size=args.test_size, shuffle=True, seed=args.seed)
+    repo_prefix = args.output_repo_prefix if args.output_repo_prefix else args.input_repo
+    dataset.push_to_hub(repo_prefix + '_' + args.score_type + '_min_expand_ver2_tokenized')
 
 
 if __name__ == "__main__":

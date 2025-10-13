@@ -269,8 +269,7 @@ def main():
 
     # Split and push (keep naming consistent)
     dataset = dataset.train_test_split(test_size=1000, shuffle=True)
-    dataset.push_to_hub(args.input_repo + '_' + args.score_type + '_maxlenp_' + str(args.maxlen_prompt)+'_beta_'+str(args.beta) + '_min_tokenized')
-
+    dataset.push_to_hub('MisDrifter/whole_min_tokenized')
 
 if __name__ == "__main__":
     main()
