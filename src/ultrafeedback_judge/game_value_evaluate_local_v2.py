@@ -42,6 +42,18 @@ def parse_arguments():
     parser.add_argument("--maxlen", type=int, default=8192)
     parser.add_argument("--world_size", type=int, default=4)
     parser.add_argument("--temperature", type=float, default=0.1)
+    parser.add_argument(
+        "--base_temperature",
+        type=float,
+        default=None,
+        help="Temperature for base model generation; defaults to --temperature if not set",
+    )
+    parser.add_argument(
+        "--model_temperature",
+        type=float,
+        default=None,
+        help="Temperature for checkpoint model generation; defaults to --temperature if not set",
+    )
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--start_idx", type=int, default=0)
     parser.add_argument("--end_idx", type=int, default=-1)
@@ -427,7 +439,7 @@ def main():
         args.world_size,
         args.maxlen,
         args.n_response,
-        args.temperature,
+        args.base_temperature if args.base_temperature is not None else args.temperature,
         args.top_p,
     )
 
@@ -448,7 +460,7 @@ def main():
             args.world_size,
             args.maxlen,
             args.n_response,
-            args.temperature,
+            args.model_temperature if args.model_temperature is not None else args.temperature,
             args.top_p,
         )
 
@@ -457,7 +469,6 @@ def main():
         judge_llm = LLM(
             model=args.judge_model,
             tensor_parallel_size=args.world_size,
-            max_model_len=args.maxlen,
             gpu_memory_utilization=0.85,
             trust_remote_code=True,
         )
