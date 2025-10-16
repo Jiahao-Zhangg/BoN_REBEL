@@ -112,7 +112,7 @@ def main():
         })
 
     # Process a single split
-    def process_split(dataset):
+    def process_split(dataset, is_train):
         print('split length:', len(dataset))
         required_cols = ["qwen_prompt", "qwen_prompt_tokens"]
         for c in required_cols:
@@ -254,42 +254,55 @@ def main():
                     eid = tokenizer.eos_token_id
                     assert (pid is None or last_id == pid) or (eid is None or last_id == eid), "Qwen selection last token should be PAD or EOS"
 
-            for idx_a in range(len(selection_ids)):
-                for idx_b in range(idx_a + 1, len(selection_ids)):
-                    higher_idx, lower_idx = idx_a, idx_b
-                    if g_values[higher_idx] < g_values[lower_idx]:
-                        higher_idx, lower_idx = lower_idx, higher_idx
+            selected_pairs = []
+            if is_train:
+                for idx_a in range(len(selection_ids)):
+                    for idx_b in range(idx_a + 1, len(selection_ids)):
+                        higher_idx, lower_idx = idx_a, idx_b
+                        if g_values[higher_idx] < g_values[lower_idx]:
+                            higher_idx, lower_idx = lower_idx, higher_idx
+                        selected_pairs.append((higher_idx, lower_idx))
+            else:
+                if g_values:
+                    g_array = np.array(g_values, dtype=float)
+                    if g_array.size >= 2:
+                        sorted_indices = np.argsort(g_array)
+                        lower_idx = int(sorted_indices[0])
+                        higher_idx = int(sorted_indices[-1])
+                        if higher_idx != lower_idx:
+                            selected_pairs.append((higher_idx, lower_idx))
 
-                    for col in dataset.column_names:
-                        expanded_data[col].append(row[col])
+            for higher_idx, lower_idx in selected_pairs:
+                for col in dataset.column_names:
+                    expanded_data[col].append(row[col])
 
-                    higher_sel_id = selection_ids[higher_idx]
-                    lower_sel_id = selection_ids[lower_idx]
+                higher_sel_id = selection_ids[higher_idx]
+                lower_sel_id = selection_ids[lower_idx]
 
-                    expanded_data["chosen"].append(row[f"selection_response_{higher_sel_id}"])
-                    expanded_data["reject"].append(row[f"selection_response_{lower_sel_id}"])
+                expanded_data["chosen"].append(row[f"selection_response_{higher_sel_id}"])
+                expanded_data["reject"].append(row[f"selection_response_{lower_sel_id}"])
 
-                    expanded_data["qwen_chosen_tokens"].append(selection_tokens[higher_idx])
-                    expanded_data["qwen_reject_tokens"].append(selection_tokens[lower_idx])
+                expanded_data["qwen_chosen_tokens"].append(selection_tokens[higher_idx])
+                expanded_data["qwen_reject_tokens"].append(selection_tokens[lower_idx])
 
-                    expanded_data["qwen_chosen"].append(selection_texts[higher_idx])
-                    expanded_data["qwen_reject"].append(selection_texts[lower_idx])
+                expanded_data["qwen_chosen"].append(selection_texts[higher_idx])
+                expanded_data["qwen_reject"].append(selection_texts[lower_idx])
 
-                    expanded_data["chosen_reward"].append(float(g_values[higher_idx]))
-                    expanded_data["reject_reward"].append(float(g_values[lower_idx]))
+                expanded_data["chosen_reward"].append(float(g_values[higher_idx]))
+                expanded_data["reject_reward"].append(float(g_values[lower_idx]))
 
-                    expanded_data["g_chosen"].append(float(g_values[higher_idx]))
-                    expanded_data["g_reject"].append(float(g_values[lower_idx]))
+                expanded_data["g_chosen"].append(float(g_values[higher_idx]))
+                expanded_data["g_reject"].append(float(g_values[lower_idx]))
 
-                    expanded_data["j_star"].append(j_star)
+                expanded_data["j_star"].append(j_star)
 
         dataset = Dataset.from_dict(expanded_data)
         dataset = dataset.filter(lambda row: filter_same_responses(row))
         print('filtered same responses:', len(dataset))
         return dataset
 
-    train_processed = process_split(ds_dict['train'])
-    test_processed = process_split(ds_dict['test'])
+    train_processed = process_split(ds_dict['train'], is_train=True)
+    test_processed = process_split(ds_dict['test'], is_train=False)
 
     out = DatasetDict({"train": train_processed, "test": test_processed})
     repo_prefix = args.output_repo_prefix if args.output_repo_prefix else args.input_repo
@@ -309,9 +322,9 @@ def main():
 
         gap_out = DatasetDict({
             "train": gap_filter(out["train"]),
-            "test": gap_filter(out["test"]),
+            "test": out["test"],
         })
-        gap_out.push_to_hub(base_repo + "_gap")
+        gap_out.push_to_hub(f"{base_repo}_gap_ratio_{args.gap_ratio}")
 
 
 if __name__ == "__main__":

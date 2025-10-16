@@ -104,7 +104,7 @@ def main():
             'test': ds_dict['test'].select(range(n_test)),
         })
 
-    def process_split(dataset):
+    def process_split(dataset, is_train):
         print('split length:', len(dataset))
         required_cols = ["qwen_prompt", "qwen_prompt_tokens"]
         for c in required_cols:
@@ -225,12 +225,25 @@ def main():
                     eid = tokenizer.eos_token_id
                     assert (pid is None or last_id == pid) or (eid is None or last_id == eid), "Qwen selection last token should be PAD or EOS"
 
-        for idx_a in range(len(selection_ids)):
-            for idx_b in range(idx_a + 1, len(selection_ids)):
-                higher_idx, lower_idx = idx_a, idx_b
-                if g_values[higher_idx] < g_values[lower_idx]:
-                    higher_idx, lower_idx = lower_idx, higher_idx
+            selected_pairs = []
+            if is_train:
+                for idx_a in range(len(selection_ids)):
+                    for idx_b in range(idx_a + 1, len(selection_ids)):
+                        higher_idx, lower_idx = idx_a, idx_b
+                        if g_values[higher_idx] < g_values[lower_idx]:
+                            higher_idx, lower_idx = lower_idx, higher_idx
+                        selected_pairs.append((higher_idx, lower_idx))
+            else:
+                if g_values:
+                    g_array = np.array(g_values, dtype=float)
+                    if g_array.size >= 2:
+                        sorted_indices = np.argsort(g_array)
+                        lower_idx = int(sorted_indices[0])
+                        higher_idx = int(sorted_indices[-1])
+                        if higher_idx != lower_idx:
+                            selected_pairs.append((higher_idx, lower_idx))
 
+            for higher_idx, lower_idx in selected_pairs:
                 for col in dataset.column_names:
                     expanded_data[col].append(row[col])
 
@@ -257,8 +270,8 @@ def main():
         print('filtered same responses:', len(dataset))
         return dataset
 
-    train_processed = process_split(ds_dict['train'])
-    test_processed = process_split(ds_dict['test'])
+    train_processed = process_split(ds_dict['train'], is_train=True)
+    test_processed = process_split(ds_dict['test'], is_train=False)
 
     out = DatasetDict({"train": train_processed, "test": test_processed})
     repo_prefix = args.output_repo_prefix if args.output_repo_prefix else args.input_repo
@@ -276,11 +289,12 @@ def main():
             filtered = sorted_by_gap.select(range(keep_count)).remove_columns(["_gap"]).shuffle(seed=args.gap_shuffle_seed)
             return filtered
 
+        
         gap_out = DatasetDict({
             "train": gap_filter(out["train"]),
-            "test": gap_filter(out["test"]),
+            "test": out["test"],
         })
-        gap_out.push_to_hub(base_repo + "_gap")
+        gap_out.push_to_hub(f"{base_repo}_gap_ratio_{args.gap_ratio}")
 
 
 if __name__ == "__main__":
