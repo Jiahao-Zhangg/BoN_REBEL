@@ -8,10 +8,10 @@ set -euo pipefail
 # export HUGGINGFACE_HUB_CACHE="/work2/jiahaoz4/.cache/huggingface/hub"
 
 # Change to your BoN_REBEL directory
-cd /work2/$USER/BoN_REBEL
+cd /fsx/gstevenw/testing_alignment_algos/BoN_REBEL
 
 # Change to your conda environment path
-source /work2/$USER/miniconda3/etc/profile.d/conda.sh
+source /fsx/gstevenw/miniconda3/etc/profile.d/conda.sh
 
 # Configuration variables (modify as needed)
 ETA="1e4"                     # REBEL eta parameter
@@ -22,7 +22,7 @@ WORLD_SIZE="4"               # Number of GPUs/processes to use
 BON="true"                  # Toggle Best-of-N training behaviour for rebel.py
 SEED="555134"               # Random seed for reproducible runs
 JOB_RUN_ID="${JOB_RUN_ID:-$(date +%s)}"
-TMP_BASE="${TMPDIR:-../tmp}"
+TMP_BASE="/fsx/gstevenw/testing_alignment_algos/BoN_REBEL/tmp"
 TMP_RUN_ROOT="${TMP_BASE%/}/min_stage2_${USER}/${JOB_RUN_ID}"
 mkdir -p "$TMP_RUN_ROOT"
 
@@ -38,7 +38,7 @@ exec 2> >(tee -a "$LOG_ERR" >&2)
 SECONDS=0
 OUTPUT_DIR="${TMP_RUN_ROOT}/outputs_seed_${SEED}_eta_${ETA}"
 HF_REPO_NAME="zjhhhh/qwen2.5_3B_Instruct_min_stage2_seed_${SEED}_eta_${ETA}"
-# EVAL_RESULTS_DIR="/work2/$USER/qwen2.5_3B_Instruct_min_gap_evaluation_results"
+EVAL_RESULTS_DIR="/fsx/gstevenw/qwen2.5_3B_Instruct_min_evaluation_results"
 
 # Derived configuration
 GRADIENT_ACCUMULATION_STEPS=$((128 / WORLD_SIZE))
