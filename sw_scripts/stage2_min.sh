@@ -23,12 +23,12 @@ BON="true"                  # Toggle Best-of-N training behaviour for rebel.py
 SEED="555134"               # Random seed for reproducible runs
 JOB_RUN_ID="${JOB_RUN_ID:-$(date +%s)}"
 TMP_BASE="${TMPDIR:-../tmp}"
-TMP_RUN_ROOT="${TMP_BASE%/}/min_stage1_${USER}/${JOB_RUN_ID}"
+TMP_RUN_ROOT="${TMP_BASE%/}/min_stage2_${USER}/${JOB_RUN_ID}"
 mkdir -p "$TMP_RUN_ROOT"
 
 LOG_DIR="${REBEL_LOG_DIR:-../logs}"
-LOG_OUT="${LOG_DIR%/}/min_stage1_eta_1e4.out"
-LOG_ERR="${LOG_DIR%/}/min_stage1_eta_1e4.err"
+LOG_OUT="${LOG_DIR%/}/min_stage2_eta_1e4.out"
+LOG_ERR="${LOG_DIR%/}/min_stage2_eta_1e4.err"
 mkdir -p "$LOG_DIR"
 
 # Mirror stdout/stderr to log files while keeping console output
@@ -37,7 +37,7 @@ exec 2> >(tee -a "$LOG_ERR" >&2)
 
 SECONDS=0
 OUTPUT_DIR="${TMP_RUN_ROOT}/outputs_seed_${SEED}_eta_${ETA}"
-HF_REPO_NAME="zjhhhh/qwen2.5_3B_Instruct_min_stage1_seed_${SEED}_eta_${ETA}"
+HF_REPO_NAME="zjhhhh/qwen2.5_3B_Instruct_min_stage2_seed_${SEED}_eta_${ETA}"
 # EVAL_RESULTS_DIR="/work2/$USER/qwen2.5_3B_Instruct_min_gap_evaluation_results"
 
 # Derived configuration
