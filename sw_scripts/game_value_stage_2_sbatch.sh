@@ -76,7 +76,7 @@ bash sw_scripts/game_value_parallel.sh \
   --judge_model "$JUDGE_MODEL" \
   --gpu_groups "$GPU_GROUPS" \
   --extra_args_base "--n_response $N_RESPONSE --world_size 2 --base_gpus 0,1 --temperature 0.8 --end_idx $SAMPLE_SIZE" \
-  --extra_args_eval "--world_size 2 --n_response $N_RESPONSE --n_judge_samples $N_JUDGE_SAMPLES --model_temperature 0.1 --switch_position" \
+  --extra_args_eval "--world_size 1 --n_response $N_RESPONSE --n_judge_samples $N_JUDGE_SAMPLES --model_temperature 0.1 --switch_position" \
   --extra_args_score "--beta 1.0"
 
 echo "Job finished at $(date)"
