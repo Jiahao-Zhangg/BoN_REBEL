@@ -57,7 +57,7 @@ def generate_n_responses(model_id: str, prompts: List[str], world_size: int, max
         model=model_id,
         tensor_parallel_size=world_size,
         max_model_len=maxlen,
-        gpu_memory_utilization=0.2,
+        gpu_memory_utilization=0.85,
         trust_remote_code=True,
     )
     chat_prompts = [tokenizer.apply_chat_template([{ "role": "user", "content": p }], tokenize=False, add_generation_prompt=True) for p in tqdm(prompts)]
