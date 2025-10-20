@@ -17,8 +17,8 @@ conda activate new_vllm
 
 echo "Activated conda env: $(conda info --envs | awk '/\*/ {print $1}')"
 
-CHECKPOINT_REPO_1=""zjhhhh/qwen2.5_3B_Instruct_min_stage1_seed_555134_eta_1e4_step_1""
-CHECKPOINT_REPO_2=""zjhhhh/qwen2.5_3B_Instruct_min_stage1_seed_555134_eta_1e4_step_101""
+CHECKPOINT_REPO_1=""zjhhhh/qwen2.5_3B_Instruct_min_stage2_seed_555134_eta_1e4_step_1""
+CHECKPOINT_REPO_2=""zjhhhh/qwen2.5_3B_Instruct_min_stage2_seed_555134_eta_1e4_step_101""
 CHECKPOINT_REPO_3=""zjhhhh/qwen2.5_3B_Instruct_min_stage2_seed_555134_eta_1e4_step_201""
 CHECKPOINT_REPO_4=""zjhhhh/qwen2.5_3B_Instruct_min_stage2_seed_555134_eta_1e4_step_301""
 CHECKPOINT_REPO_5=""zjhhhh/qwen2.5_3B_Instruct_min_stage2_seed_555134_eta_1e4_step_382_final""
