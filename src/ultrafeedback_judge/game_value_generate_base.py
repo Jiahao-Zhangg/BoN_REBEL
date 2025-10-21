@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import sys
 import argparse
 import time
 import random
@@ -45,6 +46,24 @@ def parse_arguments():
     return parser.parse_args()
 
 
+def exit_if_base_output_repo_exists(repo_id: str) -> None:
+    """
+    Exit early if the specified Hugging Face dataset repository already exists.
+    This avoids running the full generation flow when outputs are already present.
+    """
+    try:
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+        # Will raise if the repo does not exist or is inaccessible
+        api.repo_info(repo_id=repo_id, repo_type="dataset")
+        print(f"[Skip] Base output repo already exists: {repo_id}")
+        sys.exit(0)
+    except Exception:
+        # Repo does not exist or cannot be accessed; proceed with generation
+        return
+
+
 def generate_n_responses(model_id: str, prompts: List[str], world_size: int, maxlen: int, n_response: int, temperature: float, top_p: float) -> List[List[str]]:
     print(f"Generating {n_response} responses per prompt with model: {model_id}")
     from transformers import AutoTokenizer
@@ -87,6 +106,9 @@ def generate_n_responses(model_id: str, prompts: List[str], world_size: int, max
 def main():
     st = time.time()
     args = parse_arguments()
+
+    # Exit early if outputs already exist in the target repo
+    exit_if_base_output_repo_exists(args.base_output_repo)
 
     if args.base_gpus is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([g.strip() for g in args.base_gpus.split(",") if g.strip() != ""])
