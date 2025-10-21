@@ -49,11 +49,11 @@ CHECKPOINT_REPO_2="zjhhhh/qwen2.5_3B_Instruct_min_stage3_seed_555134_eta_1e4_ste
 CHECKPOINT_REPO_3="zjhhhh/qwen2.5_3B_Instruct_min_stage3_seed_555134_eta_1e4_step_201"
 CHECKPOINT_REPO_4="zjhhhh/qwen2.5_3B_Instruct_min_stage3_seed_555134_eta_1e4_step_301"
 CHECKPOINT_REPO_5="zjhhhh/qwen2.5_3B_Instruct_min_stage3_seed_555134_eta_1e4_step_382_final"
-CHECKPOINT_REPO_6="zjhhhh/qwen2.5_3B_Instruct_multi_stage2_seed_555134_eta_1e4_step_1"
-CHECKPOINT_REPO_7="zjhhhh/qwen2.5_3B_Instruct_multi_stage2_seed_555134_eta_1e4_step_101"
-CHECKPOINT_REPO_8="zjhhhh/qwen2.5_3B_Instruct_multi_stage2_seed_555134_eta_1e4_step_201"
-CHECKPOINT_REPO_9="zjhhhh/qwen2.5_3B_Instruct_multi_stage2_seed_555134_eta_1e4_step_301"
-CHECKPOINT_REPO_10="zjhhhh/qwen2.5_3B_Instruct_multi_stage2_seed_555134_eta_1e4_step_382_final"
+CHECKPOINT_REPO_6="zjhhhh/qwen2.5_3B_Instruct_multi_stage3_seed_555134_eta_1e4_step_1"
+CHECKPOINT_REPO_7="zjhhhh/qwen2.5_3B_Instruct_multi_stage3_seed_555134_eta_1e4_step_101"
+CHECKPOINT_REPO_8="zjhhhh/qwen2.5_3B_Instruct_multi_stage3_seed_555134_eta_1e4_step_201"
+CHECKPOINT_REPO_9="zjhhhh/qwen2.5_3B_Instruct_multi_stage3_seed_555134_eta_1e4_step_301"
+CHECKPOINT_REPO_10="zjhhhh/qwen2.5_3B_Instruct_multi_stage3_seed_555134_eta_1e4_step_382_final"
 
 # Group checkpoints per GPU
 CHECK_POINT_GROUPS="${CHECKPOINT_REPO_1} ${CHECKPOINT_REPO_2} ${CHECKPOINT_REPO_3} ${CHECKPOINT_REPO_4} ${CHECKPOINT_REPO_5} ${CHECKPOINT_REPO_6} ${CHECKPOINT_REPO_7},${CHECKPOINT_REPO_8} ${CHECKPOINT_REPO_9},${CHECKPOINT_REPO_10}"
