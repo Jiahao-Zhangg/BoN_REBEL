@@ -54,7 +54,8 @@ def parse_arguments():
 
     # Misc
     parser.add_argument("--score_json_path", type=str, default=None)
-    parser.add_argument("--max_prompts", type=int, default=None)
+    parser.add_argument("--start_idx", type=int, default=None, help="Start index (inclusive) into unique prompts")
+    parser.add_argument("--end_idx", type=int, default=None, help="End index (exclusive) into unique prompts")
 
     return parser.parse_args()
 
@@ -350,8 +351,11 @@ def main():
 
     # Prepare unique prompts and mappings
     unique_prompts: List[str] = list(dict.fromkeys([row["prompt"] for row in expanded_rows]))
-    if args.max_prompts is not None:
-        unique_prompts = unique_prompts[: args.max_prompts]
+    # Apply start/end slicing first
+    if args.start_idx is not None or args.end_idx is not None:
+        s = 0 if args.start_idx is None else max(0, int(args.start_idx))
+        e = None if args.end_idx is None else int(args.end_idx)
+        unique_prompts = unique_prompts[s:e]
         expanded = Dataset.from_list([row for row in expanded_rows if row["prompt"] in set(unique_prompts)])
         expanded_rows = [row for row in expanded]
     prompt_to_idx: Dict[str, int] = {p: i for i, p in enumerate(unique_prompts)}
@@ -505,12 +509,12 @@ def main():
 
         print(f"Score for {model_name}: {result}")
         scores_accumulator.append(result)
-
-    summary_path = Path(args.score_json_path) if args.score_json_path else Path(f"{sanitize_model_name(args.output_repo_prefix)}_scores.json")
-    summary_data = {"checkpoints": args.check_points, "scores": scores_accumulator}
-    with open(summary_path, "w") as f:
-        json.dump(summary_data, f, indent=2)
-    print(f"Saved score summary to {summary_path}")
+    if args.score_json_path:
+        summary_path = Path(args.score_json_path) if args.score_json_path else Path(f"{sanitize_model_name(args.output_repo_prefix)}_scores.json")
+        summary_data = {"checkpoints": args.check_points, "scores": scores_accumulator}
+        with open(summary_path, "w") as f:
+            json.dump(summary_data, f, indent=2)
+        print(f"Saved score summary to {summary_path}")
 
 
 if __name__ == "__main__":
