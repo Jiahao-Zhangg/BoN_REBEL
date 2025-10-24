@@ -58,7 +58,7 @@ SCORE_JSON_PATH="$SCORE_BASE_PATH/scores_stage2_debug.json"
 # Use 4 GPU per judge worker across 8 GPUs total
 GPU_GROUPS="0 1 2 3 4 5 6 7"
 
-# Derive a base repo for stage 1
+# Derive a base repo for stage 2
 BASE_OUTPUT_REPO="${OUTPUT_REPO_PREFIX}_base"
 
 # -----------------------------
