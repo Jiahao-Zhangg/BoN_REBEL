@@ -9,6 +9,9 @@ import math
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
+from datasets import Dataset
+from pydantic import BaseModel, Field
+from vllm.sampling_params import GuidedDecodingParams
 
 def set_seed(seed: int = 5775709):
     random.seed(seed)
@@ -145,6 +148,14 @@ def get_numeric_mode(values: List[int], score_range: Tuple[int, int]) -> Optiona
     modes = [k for k, v in counts.items() if v == max_count]
     modes.sort()
     return modes[len(modes) // 2]
+
+
+class Preference5ScoreOutput(BaseModel):
+    explanation: str
+    verdict: int = Field(ge=-1, le=4)
+
+
+PREFERENCE_5SCORE_GUIDED_DECODING = GuidedDecodingParams(json=Preference5ScoreOutput.model_json_schema())
 
 
 def is_valid_5score(value: Optional[int]) -> bool:
@@ -336,7 +347,6 @@ def main():
     from datasets import load_dataset, Dataset
     from transformers import AutoTokenizer
     from vllm import LLM, SamplingParams
-    from vllm.sampling_params import GuidedDecodingParams
     import torch
 
     # Load base responses dataset (pushed in stage 1)
@@ -373,16 +383,6 @@ def main():
         base_resps.append([base_ds[bi][f"base_response_{j}"] for j in range(n_base)])
 
     template = load_preference_5score_template()
-    guided = GuidedDecodingParams(json={
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "type": "object",
-        "properties": {
-            "explanation": {"type": "string"},
-            "verdict": {"type": "integer", "minimum": -1, "maximum": 4},
-        },
-        "required": ["verdict"],
-        "additionalProperties": True,
-    })
 
     scores_accumulator: List[float] = []
 
@@ -414,7 +414,7 @@ def main():
             top_k=args.judge_top_k,
             n=args.n_judge_samples,
             max_tokens=args.judge_max_tokens,
-            guided_decoding=guided,
+            guided_decoding=PREFERENCE_5SCORE_GUIDED_DECODING,
         )
 
         num_rows = len(expanded_rows)
