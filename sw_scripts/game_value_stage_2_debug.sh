@@ -44,8 +44,8 @@ N_JUDGE_SAMPLES=5
 SAMPLE_SIZE=500
 
 # Sample checkpoints
-CHECKPOINT_REPO_1="zjhhhh/qwen2.5_3B_Instruct_min_stage1_seed_555134_eta_1e4_step_1"
-CHECKPOINT_REPO_6="zjhhhh/qwen2.5_3B_Instruct_multi_stage1_seed_555134_eta_1e4_step_1"
+CHECKPOINT_REPO_1="zjhhhh/qwen2.5_3B_Instruct_min_stage2_seed_555134_eta_1e4_step_1"
+CHECKPOINT_REPO_6="zjhhhh/qwen2.5_3B_Instruct_multi_stage2_seed_555134_eta_1e4_step_1"
 
 # Group checkpoints per GPU
 CHECK_POINT_GROUPS="${CHECKPOINT_REPO_1} ${CHECKPOINT_REPO_6}"
