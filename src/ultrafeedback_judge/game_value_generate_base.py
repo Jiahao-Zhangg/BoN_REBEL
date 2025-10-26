@@ -33,6 +33,7 @@ def parse_arguments():
 
     # Generation
     parser.add_argument("--base_model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
+    parser.add_argument("--split", type=str, default="test")
     parser.add_argument("--n_response", type=int, default=2)
     parser.add_argument("--maxlen", type=int, default=8192)
     parser.add_argument("--world_size", type=int, default=4)
@@ -115,10 +116,12 @@ def main():
         os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
     from datasets import load_dataset, Dataset
-
-    try:
-        raw = load_dataset(args.dataset_repo, split='test')
-    except Exception:
+    if args.split=='test':
+        try:
+            raw = load_dataset(args.dataset_repo, split='test')
+        except Exception:
+            raw = load_dataset(args.dataset_repo, split='train')
+    else:
         raw = load_dataset(args.dataset_repo, split='train')
     if args.end_idx != -1:
         raw = raw.select(range(args.start_idx, min(args.end_idx, len(raw))))
