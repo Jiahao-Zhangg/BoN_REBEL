@@ -35,7 +35,7 @@ export TOKENIZERS_PARALLELISM=false
 # -----------------------------
 # Parameters
 # -----------------------------
-DATASET_REPO="zjhhhh/stage2_mean_beta_1.0_multi_expand_tokenized_gap_0.22_logprob"
+DATASET_REPO="zjhhhh/stage3_mean_beta_1.0_multi_expand_tokenized_gap_0.22"
 JUDGE_MODEL="Qwen/Qwen3-14B"
 OUTPUT_REPO_PREFIX="zjhhhh/game_stage3_train"
 BASE_MODEL="Qwen/Qwen2.5-3B-Instruct"
