@@ -40,7 +40,7 @@ exec 2> >(tee -a "$LOG_ERR" >&2)
 
 SECONDS=0
 OUTPUT_DIR="${TMP_RUN_ROOT}/outputs_seed_${SEED}_eta_${ETA}"
-HF_REPO_NAME="zjhhhh/qwen2.5_3B_Instruct_multi_stage2_seed_${SEED}_eta_${ETA}_noexpand"
+HF_REPO_NAME="zjhhhh/qwen2.5_3B_Instruct_multi_stage2_noexpand"
 EVAL_RESULTS_DIR="/fsx/gstevenw/qwen2.5_3B_Instruct_multi_evaluation_results"
 
 # Derived configuration
