@@ -1,12 +1,13 @@
 #!/bin/bash
 
-#SBATCH --job-name=stage2_game_value
-#SBATCH --output=logs/stage2_game_value_%j.out
-#SBATCH --error=logs/stage2_game_value_%j.err
+#SBATCH --job-name=perprompt_game_value
+#SBATCH --output=logs/perprompt_game_value_%j.out
+#SBATCH --error=logs/perprompt_game_value_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=256G
 #SBATCH --partition=ml.p5.48xlarge
+#SBATCH --nodelist=ip-10-1-81-8
 
 set -euo pipefail
 

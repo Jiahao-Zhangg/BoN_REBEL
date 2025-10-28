@@ -1,12 +1,13 @@
 #!/bin/bash
 
-#SBATCH --job-name=stage3_game_value
-#SBATCH --output=logs/stage3_game_value_%j.out
-#SBATCH --error=logs/stage3_game_value_%j.err
+#SBATCH --job-name=stage3_game_value_beta_0.1_train
+#SBATCH --output=logs/stage3_game_value_beta_0.1_train_%j.out
+#SBATCH --error=logs/stage3_game_value_beta_0.1_train_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=256G
 #SBATCH --partition=ml.p5.48xlarge
+#SBATCH --nodelist=ip-10-1-38-11
 
 set -euo pipefail
 
