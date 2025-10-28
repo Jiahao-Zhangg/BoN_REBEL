@@ -26,8 +26,10 @@ TMP_BASE="/fsx/gstevenw/testing_alignment_algos/BoN_REBEL/tmp"
 TMP_RUN_ROOT="${TMP_BASE%/}/multi_stage2_${USER}/${JOB_RUN_ID}"
 mkdir -p "$TMP_RUN_ROOT"
 
-# Optional explicit WandB run name; defaults to unique, pattern-matching value
-RUN_NAME="${RUN_NAME:-stage2_multi_eta_${ETA}_beta_${BETA}_seed_${SEED}}"
+# Optional explicit WandB run name; keep original prefix, append compact timestamp
+# If RUN_NAME is preset in the environment, it is used as-is.
+RUN_ID="${RUN_ID:-$(date +%y%m%d%H%M)}"
+RUN_NAME="${RUN_NAME:-stage2_multi_eta_${ETA}_beta_${BETA}_seed_${SEED}_${RUN_ID}}"
 
 LOG_DIR="${REBEL_LOG_DIR:-../logs}"
 LOG_OUT="${LOG_DIR%/}/multi_stage2_eta_1e4.out"
