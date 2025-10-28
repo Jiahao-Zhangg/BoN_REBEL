@@ -268,7 +268,7 @@ if __name__ == '__main__':
     # logging
     console = Console(force_terminal=True)
     accelerator.wait_for_everyone()
-    run_name = f"{args.exp_name}_{args.seed}_{int(time.time())}"
+    run_name = args.run_name if args.run_name is not None else f"{args.exp_name}_{args.seed}_{int(time.time())}"
     accelerator.print("Wandb run name: ", run_name)
     writer = SimpleNamespace()  # dummy writer
     writer.add_scalar = lambda x, y, z: None
