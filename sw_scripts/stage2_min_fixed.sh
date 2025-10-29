@@ -42,7 +42,7 @@ exec 2> >(tee -a "$LOG_ERR" >&2)
 
 SECONDS=0
 OUTPUT_DIR="${TMP_RUN_ROOT}/outputs_seed_${SEED}_eta_${ETA}"
-HF_REPO_NAME="zjhhhh/qwen2.5_3B_Instruct_min_stage2_fixed_beta_${BETA}"
+HF_REPO_NAME="zjhhhh/qwen2.5_3B_Instruct_min_stage2_fixed"
 EVAL_RESULTS_DIR="/fsx/gstevenw/qwen2.5_3B_Instruct_min_evaluation_results"
 
 # Derived configuration
@@ -79,7 +79,7 @@ set -u
 TRAIN_CMD=(
     python -m accelerate.commands.launch
     --config_file accelerate_cfgs/deepspeed_config_stage_3.yaml
-    --main-process-port 29080
+    --main-process-port 29081
     --num_processes "$WORLD_SIZE"
     src/ultrafeedback_judge/rebel_save.py
     --output_dir "$OUTPUT_DIR"
