@@ -2,27 +2,29 @@ import argparse
 import numpy as np
 import re
 import torch
-import torch.nn.functional as F
 from datasets import load_dataset, Dataset, DatasetDict
 from tqdm import tqdm
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModelForCausalLM
-from typing import Dict, List
+from transformers import AutoTokenizer
 
 torch.set_printoptions(threshold=10_000)
 
+
+# WARNING: Magic number, make sure it works for your model
 SYS_PROMPT_LEN = 24
 
+
 def parse_arguments():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Filter + tokenize using worst-coordinate gradients from current/base scores.",
+    )
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
-    # Default to MisDrifter/test_dataset which contains selection/current/base score vectors
     parser.add_argument("--input_repo", type=str, default="zjhhhh/whole_sw_maxlen_8192_rescale",
-                        help="HF dataset repo to load (expects selection/current/base responses and score vectors)")
+                        help="HF dataset repo to load (expects selection/current/base responses and score vectors + requirements)")
     parser.add_argument("--maxlen", type=int, default=2048)
     parser.add_argument("--maxlen_prompt", type=int, default=1024)
     parser.add_argument("--beta", type=float, default=1.0, help="beta parameter for A/B/g computation")
-    parser.add_argument("--slicing_idx", type=int, default=24)
+    parser.add_argument("--slicing_idx", type=int, default=24,
+                        help="Fallback slicing index if model-specific detection not used")
     parser.add_argument("--score_type", type=str, default="mean", choices=["mean", "majority"],
                         help="Use all mean or all majority score vectors when computing preferences")
     parser.add_argument("--output_repo_prefix", type=str, default=None,
@@ -34,19 +36,18 @@ def parse_arguments():
     parser.add_argument("--gap_shuffle_seed", type=int, default=None,
                         help="Shuffle seed used after gap filtering (None = no fixed seed)")
     parser.add_argument("--softmax_coefficient", type=float, default=1.0,
-                        help="Coefficient for computing soft j_star = softmax(A_vec * coeff)")
+                        help="Coefficient for computing soft j_star = softmax(-estimated_p * coeff)")
     return parser.parse_args()
 
 
 def get_message(instruction=None, response=None):
+    assert instruction is not None or response is not None
 
-    assert instruction != None or response != None
-
-    if response == None:
+    if response is None:
         message = [
             {"role": "user", "content": instruction},
         ]
-    elif instruction == None:
+    elif instruction is None:
         message = [
             {"role": "assistant", "content": response}
         ]
@@ -55,7 +56,6 @@ def get_message(instruction=None, response=None):
             {"role": "user", "content": instruction},
             {"role": "assistant", "content": response}
         ]
-
     return message
 
 
@@ -63,17 +63,13 @@ def filter_same_responses(row):
     return row['chosen'] != row['reject']
 
 
-# BTL no longer used; probabilities are provided by dataset
-
-
 def main():
-
-    # init
     args = parse_arguments()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     tokenizer_left = AutoTokenizer.from_pretrained(args.model, padding_side='left')
-    # Prefer explicit [PAD] token for Qwen so it shows in decoded strings
+
+    # Ensure PAD handling sensible
     if "Qwen" in args.model:
         if tokenizer.pad_token != "[PAD]":
             tokenizer.add_special_tokens({"pad_token": "[PAD]"})
@@ -95,16 +91,13 @@ def main():
 
     if "Qwen" in args.model:
         slicing_idx_used = SYS_PROMPT_LEN
-        print(f'slicing index used (fixed): {slicing_idx_used}')
     else:
         slicing_idx_used = args.slicing_idx
 
-    # Load both splits from preprocessed dataset
     ds_dict = load_dataset(args.input_repo)
     if 'train' not in ds_dict or 'test' not in ds_dict:
         raise ValueError("Preprocessed dataset must contain 'train' and 'test' splits.")
 
-    # Optionally limit rows in each split for debugging
     if args.limit_rows and args.limit_rows > 0:
         n_train = min(args.limit_rows, len(ds_dict['train']))
         n_test = min(args.limit_rows, len(ds_dict['test']))
@@ -113,7 +106,6 @@ def main():
             'test': ds_dict['test'].select(range(n_test)),
         })
 
-    # Process a single split
     def process_split(dataset, is_train):
         print('split length:', len(dataset))
         required_cols = ["qwen_prompt", "qwen_prompt_tokens"]
@@ -168,13 +160,10 @@ def main():
         })
 
         for row in tqdm(dataset):
-            beta = args.beta
-            # Build current vs base matrices per base: shape (K=len(current_ids), L)
-            current_base_scores = []
+            current_vectors = []
             vector_len = None
-            for base_id in base_ids:
-                rows = []
-                for cur_id in current_ids:
+            for cur_id in current_ids:
+                for base_id in base_ids:
                     key = f"current_{cur_id}_base_{base_id}_{args.score_type}"
                     raw_scores = row.get(key, None)
                     if raw_scores is None:
@@ -187,56 +176,36 @@ def main():
                         raise ValueError(
                             f"Mismatched score vector length for {key}: expected {vector_len}, got {p_vec.shape[0]}"
                         )
-                    rows.append(p_vec)
-                if not rows:
-                    continue
-                current_base_scores.append(np.stack(rows, axis=0))  # (K, L)
-            if not current_base_scores:
-                raise ValueError("No current-base scores available to estimate A_vec and j_star.")
+                    current_vectors.append(p_vec)
+            if not current_vectors:
+                raise ValueError("No current-base scores available to estimate P(x, pi, pi').")
 
-            # Compute exp_terms per base: exp(- (1/K) * sum_k P_m / beta) for each m
-            exp_terms_list = []  # list of vectors (L,)
-            for cb in current_base_scores:
-                inner_sums = np.sum(cb, axis=0) / (beta * cb.shape[0])  # (L,)
-                exp_terms_list.append(np.exp(-inner_sums))
-
-            # A_m(x) = sum_i exp_terms_i[m] across bases
-            A_vec = exp_terms_list[0]
-            for i in range(1, len(exp_terms_list)):
-                A_vec = A_vec + exp_terms_list[i]
-            # Soft j_star: j_star = softmax(A_vec * softmax_coefficient)
-            j_star = np.exp(beta * np.log(A_vec/len(exp_terms_list)) * float(args.softmax_coefficient))
+            stacked_current = np.stack(current_vectors, axis=0)
+            estimated_p = np.mean(stacked_current, axis=0)
+            # Soft j_star emphasizing lower coordinates: j_star = softmax(-estimated_p * coeff)
+            j_star = np.exp(-estimated_p * float(args.softmax_coefficient))
             j_star = j_star / np.sum(j_star)
 
-            # Compute g(z) as E_{j~j_star}[B_j/A_j]
             g_values = []
             selection_tokens = []
             selection_texts = []
             for sel_id in selection_ids:
-                # Gather selection vectors per base and form B_j across coordinates
-                # B_j(z) = sum_i exp_terms_i[j] * P_i[z][j]
-                B_vec = np.zeros_like(A_vec, dtype=float)
-                any_base = False
-                for base_index, base_id in enumerate(base_ids):
+                per_base_scores = []
+                for base_id in base_ids:
                     key = f"selection_{sel_id}_base_{base_id}_{args.score_type}"
                     raw_scores = row.get(key, None)
                     if raw_scores is None:
                         continue
                     p_vec = np.array(raw_scores, dtype=float)
                     p_vec = np.atleast_1d(p_vec)
-                    # Accumulate elementwise product for this base across all j
-                    B_vec = B_vec + (exp_terms_list[base_index] * p_vec)
-                    any_base = True
+                    per_base_scores.append(float(p_vec @ j_star))
 
-                if not any_base:
+                if not per_base_scores:
                     raise ValueError(
-                        f"No selection-base scores available for selection {sel_id} to compute g."
+                        f"No selection-base scores available for selection {sel_id} to compute gradient."
                     )
 
-                # g(z) = E_j[ B_j / A_j ] under j_star
-                ratios = B_vec / A_vec
-                g_z = float(ratios @ j_star)
-                g_values.append(g_z)
+                g_values.append(float(np.mean(per_base_scores)))
 
                 sel_token = tokenizer.apply_chat_template(
                     get_message(response=row[f"selection_response_{sel_id}"]),
@@ -296,7 +265,6 @@ def main():
 
                 expanded_data["g_chosen"].append(float(g_values[higher_idx]))
                 expanded_data["g_reject"].append(float(g_values[lower_idx]))
-
                 expanded_data["j_star"].append(j_star.tolist())
 
         dataset = Dataset.from_dict(expanded_data)
@@ -309,7 +277,7 @@ def main():
 
     out = DatasetDict({"train": train_processed, "test": test_processed})
     repo_prefix = args.output_repo_prefix if args.output_repo_prefix else args.input_repo
-    base_repo = repo_prefix + '_' + args.score_type + '_beta_' + str(args.beta) + '_softmax_coefficient_' + str(args.softmax_coefficient) + '_multi_expand_tokenized'
+    base_repo = repo_prefix + '_' + args.score_type + '_beta_' + str(args.beta) + '_softmax_coefficient_' + str(args.softmax_coefficient) + '_min_expand_tokenized'
     out.push_to_hub(base_repo)
 
     # Optional gap filtering and secondary upload
@@ -323,6 +291,7 @@ def main():
             filtered = sorted_by_gap.select(range(keep_count)).remove_columns(["_gap"]).shuffle(seed=args.gap_shuffle_seed)
             return filtered
 
+        
         gap_out = DatasetDict({
             "train": gap_filter(out["train"]),
             "test": out["test"],
