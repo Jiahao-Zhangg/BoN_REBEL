@@ -15,7 +15,7 @@ SYS_PROMPT_LEN = 24
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Filter + tokenize using ONLY a single fixed check per prompt (1D case).",
+        description="Filter + tokenize using worst-coordinate gradients from current/base scores.",
     )
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--input_repo", type=str, default="zjhhhh/whole_sw_maxlen_8192_rescale",
@@ -36,7 +36,7 @@ def parse_arguments():
             "1) The response directly address the request without excessive or off-topic information not necessary for addressing the user's instruction? "
             "2) The response should match the context and the instruction, whether it requires professionalism, friendliness, formality, or neutrality."
         ),
-        help="Exact check text to locate per prompt; we use only this check's coordinate.",
+        help="Exact check text to locate per prompt; use only this check's coordinate (j_fixed).",
     )
     parser.add_argument("--output_repo_prefix", type=str, default=None,
                         help="If set, use this as the repo prefix for push_to_hub instead of input_repo")
@@ -75,7 +75,6 @@ def filter_same_responses(row):
 def _normalize_text(s: str) -> str:
     if s is None:
         return ""
-    # Map curly quotes to ascii and collapse whitespace, lowercase
     trans = {
         ord('’'): "'",
         ord('‘'): "'",
@@ -90,11 +89,7 @@ def _normalize_text(s: str) -> str:
 
 
 def parse_requirements_to_checks(requirements: str):
-    """Parse the enumerated requirements string into a list of check texts (without importance).
-
-    Mirrors the parsing logic used during scoring (run_inference_on_shard.py) so
-    that indices match the vectors in the dataset.
-    """
+    """Parse the enumerated requirements string into list of check texts (no importance)."""
     if not isinstance(requirements, str) or len(requirements.strip()) == 0:
         return []
 
@@ -102,7 +97,6 @@ def parse_requirements_to_checks(requirements: str):
     counter = 1
     chunks = []
     while len(req_str) > 0:
-        # Expect like "1) ... (importance: XX/100)\n2) ..."
         prefix = f"{counter})"
         assert req_str.startswith(prefix), (
             f"Malformed requirements format: expected prefix '{prefix}' but got: {req_str[:40]}...")
@@ -116,7 +110,6 @@ def parse_requirements_to_checks(requirements: str):
         req_str = req_str[len(prefix) + len(curr):]
         counter += 1
 
-    # Strip and remove trailing importance suffix
     checks = []
     for c in chunks:
         c = c.strip()
@@ -161,7 +154,6 @@ def main():
     if 'train' not in ds_dict or 'test' not in ds_dict:
         raise ValueError("Preprocessed dataset must contain 'train' and 'test' splits.")
 
-    # Optionally limit rows per split
     if args.limit_rows and args.limit_rows > 0:
         n_train = min(args.limit_rows, len(ds_dict['train']))
         n_test = min(args.limit_rows, len(ds_dict['test']))
@@ -177,19 +169,17 @@ def main():
             if c not in dataset.column_names:
                 raise ValueError(f"Expected preprocessed dataset to contain column '{c}'. Please run preprocess_common.py first.")
 
-        if 'requirements' not in dataset.column_names:
-            raise ValueError("Dataset is missing 'requirements' column required to locate fixed check index per prompt.")
-
         response_pattern = re.compile(r'^(selection|current|base)_response_\d+$')
         response_columns = sorted([name for name in dataset.column_names if response_pattern.match(name)])
         if not response_columns:
             raise ValueError("Dataset is missing response columns required for downstream tokenization.")
 
-        # Discover available selection/current/base IDs dynamically for the given score_type
+        if 'requirements' not in dataset.column_names:
+            raise ValueError("Dataset is missing 'requirements' column required to locate fixed check index per prompt.")
+
         escaped_score_type = re.escape(args.score_type)
         selection_score_pattern = re.compile(rf"^selection_(\d+)_base_(\d+)_({escaped_score_type})$")
         current_score_pattern = re.compile(rf"^current_(\d+)_base_(\d+)_({escaped_score_type})$")
-
         selection_ids = set()
         current_ids = set()
         base_ids = set()
@@ -231,6 +221,7 @@ def main():
         norm_target = _normalize_text(args.fixed_check)
 
         for row in tqdm(dataset):
+            # Locate the fixed check index j_fixed
             checks = parse_requirements_to_checks(row.get('requirements', ''))
             j_fixed = None
             for i, ch in enumerate(checks):
@@ -238,53 +229,13 @@ def main():
                     j_fixed = i
                     break
             assert j_fixed is not None, "Row passed filter but fixed check index not found."
-            beta = args.beta
 
-            # Build current vs base matrices per base: shape (K=len(current_ids), L)
-            current_base_scores = []
-            vector_len = None
-            for base_id in base_ids:
-                rows_stack = []
-                for cur_id in current_ids:
-                    key = f"current_{cur_id}_base_{base_id}_{args.score_type}"
-                    raw_scores = row.get(key, None)
-                    if raw_scores is None:
-                        continue
-                    p_vec = np.array(raw_scores, dtype=float)
-                    p_vec = np.atleast_1d(p_vec)
-                    if vector_len is None:
-                        vector_len = p_vec.shape[0]
-                    elif p_vec.shape[0] != vector_len:
-                        raise ValueError(
-                            f"Mismatched score vector length for {key}: expected {vector_len}, got {p_vec.shape[0]}"
-                        )
-                    rows_stack.append(p_vec)
-                if not rows_stack:
-                    continue
-                current_base_scores.append(np.stack(rows_stack, axis=0))  # (K, L)
-            if not current_base_scores:
-                raise ValueError("No current-base scores available to estimate exp terms at j_fixed.")
-
-            # Compute exp_terms at j_fixed for each base
-            exp_terms = []  # scalars per base
-            for cb in current_base_scores:
-                if j_fixed >= cb.shape[1]:
-                    raise ValueError(
-                        f"Fixed index j={j_fixed} out of range for current-base scores (L={cb.shape[1]})."
-                    )
-                inner = float(np.sum(cb[:, j_fixed], axis=0)) / float(beta * cb.shape[0])
-                exp_terms.append(float(np.exp(-inner)))
-
-            A_fixed = float(np.sum(exp_terms))
-
-            # Compute g for each selection id using only j_fixed
             g_values = []
             selection_tokens = []
             selection_texts = []
             for sel_id in selection_ids:
-                p_weighted = []
-                # We need to iterate bases in the same order as exp_terms
-                for base_index, base_id in enumerate(base_ids):
+                per_base_scores = []
+                for base_id in base_ids:
                     key = f"selection_{sel_id}_base_{base_id}_{args.score_type}"
                     raw_scores = row.get(key, None)
                     if raw_scores is None:
@@ -295,12 +246,14 @@ def main():
                         raise ValueError(
                             f"Score vector for {key} missing coordinate j_fixed={j_fixed} (length={p_vec.shape[0]})."
                         )
-                    p_weighted.append(float(p_vec[j_fixed]) * float(exp_terms[base_index]))
-                if not p_weighted:
-                    raise ValueError(f"No selection-base scores available for selection {sel_id} to compute g.")
-                B_fixed = float(np.sum(p_weighted))
-                g_z = B_fixed / A_fixed
-                g_values.append(float(g_z))
+                    per_base_scores.append(float(p_vec[j_fixed]))
+
+                if not per_base_scores:
+                    raise ValueError(
+                        f"No selection-base scores available for selection {sel_id} to compute gradient."
+                    )
+
+                g_values.append(float(np.mean(per_base_scores)))
 
                 sel_token = tokenizer.apply_chat_template(
                     get_message(response=row[f"selection_response_{sel_id}"]),
@@ -321,7 +274,6 @@ def main():
                     eid = tokenizer.eos_token_id
                     assert (pid is None or last_id == pid) or (eid is None or last_id == eid), "Qwen selection last token should be PAD or EOS"
 
-            # Select pairs: follow multi-expand policy for train/test
             selected_pairs = []
             if is_train:
                 for idx_a in range(len(selection_ids)):
@@ -341,7 +293,6 @@ def main():
                             selected_pairs.append((higher_idx, lower_idx))
 
             for higher_idx, lower_idx in selected_pairs:
-
                 for col in dataset.column_names:
                     expanded_data[col].append(row[col])
 
@@ -362,7 +313,6 @@ def main():
 
                 expanded_data["g_chosen"].append(float(g_values[higher_idx]))
                 expanded_data["g_reject"].append(float(g_values[lower_idx]))
-
                 expanded_data["j_fixed"].append(j_fixed)
 
         dataset = Dataset.from_dict(expanded_data)
@@ -375,10 +325,10 @@ def main():
 
     out = DatasetDict({"train": train_processed, "test": test_processed})
     # repo_prefix = args.output_repo_prefix if args.output_repo_prefix else args.input_repo
-    # base_repo = repo_prefix + '_' + args.score_type + '_beta_' + str(args.beta) + '_fixed_expand_tokenized'
-    # out.push_to_hub(base_repo)
-    out.push_to_hub(args.input_repo + '_beta_' + str(args.beta) + '_fixed_expand_tokenized')
+    # base_repo = repo_prefix + '_' + args.score_type + '_min_expand_ver2_tokenized'
+    out.push_to_hub(args.input_repo + '_min_fixed_expand_tokenized')
 
+    # Optional gap filtering and secondary upload
     if args.gap_ratio and args.gap_ratio > 0.0:
         def gap_filter(split_ds):
             if "g_chosen" not in split_ds.column_names or "g_reject" not in split_ds.column_names:
@@ -389,11 +339,12 @@ def main():
             filtered = sorted_by_gap.select(range(keep_count)).remove_columns(["_gap"]).shuffle(seed=args.gap_shuffle_seed)
             return filtered
 
+        
         gap_out = DatasetDict({
             "train": gap_filter(out["train"]),
-            "test": gap_filter(out["test"]),
+            "test": out["test"],
         })
-        gap_out.push_to_hub(base_repo + "_gap")
+        gap_out.push_to_hub(f"{base_repo}_gap_ratio_{args.gap_ratio}")
 
 
 if __name__ == "__main__":
