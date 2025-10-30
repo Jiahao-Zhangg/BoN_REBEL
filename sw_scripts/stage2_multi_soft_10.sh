@@ -43,16 +43,15 @@ exec 2> >(tee -a "$LOG_ERR" >&2)
 SECONDS=0
 OUTPUT_DIR="${TMP_RUN_ROOT}/outputs_seed_${SEED}_eta_${ETA}"
 HF_REPO_NAME="zjhhhh/stage2_multi_soft_10.0"
-EVAL_RESULTS_DIR="/fsx/gstevenw/qwen2.5_3B_Instruct_multi_evaluation_results"
+EVAL_RESULTS_DIR="/fsx/gstevenw/qwen2.5_3B_Instruct_multi_beta_1.0_evaluation_results"
 
 # Derived configuration
 GRADIENT_ACCUMULATION_STEPS=$((128 / WORLD_SIZE))
-
-TRAIN_INPUT_REPO="zjhhhh/stage2_multi_soft_10.0_expand_tokenized_gap_0.22"
+TRAIN_INPUT_REPO="zjhhhh/stage2_multi_soft_10.0_beta_1.0_expand_tokenized_gap_0.22"
 
 # Evaluation configuration
 BASE_MODEL="Qwen/Qwen2.5-3B-Instruct"
-EVAL_DATASET_NAME="zjhhhh/stage2_multi_soft_10.0_expand_tokenized_gap_0.22"
+EVAL_DATASET_NAME="zjhhhh/stage2_multi_soft_10.0_beta_1.0_expand_tokenized_gap_0.22"
 REWARD_MODEL="RLHFlow/ArmoRM-Llama3-8B-v0.1"
 EVAL_MAXLEN=2048
 BEST_OF_N=1
