@@ -181,10 +181,10 @@ def parse_args():
     parser.add_argument("--judge_type", type=str, default="preference_5score",
                         choices=["preference_binary", "preference_ternary", "preference_score", "preference_5score"])
 
-    parser.add_argument("--selection_pairs", type=int, default=10, help="number of selection responses")
-    parser.add_argument("--base_pairs", type=int, default=50, help="number of base responses")
-    parser.add_argument("--current_pairs", type=int, default=50, help="number of current responses")
-    parser.add_argument("--adversary_pairs", type=int, default=50, help="number of adversary responses")
+    parser.add_argument("--selection_pairs", type=int, default=4, help="number of selection responses")
+    parser.add_argument("--base_pairs", type=int, default=2, help="number of base responses")
+    parser.add_argument("--current_pairs", type=int, default=2, help="number of current responses")
+    parser.add_argument("--adversary_pairs", type=int, default=2, help="number of adversary responses")
 
     parser.add_argument("--max_tokens", type=int, default=256)
     parser.add_argument("--world_size", type=int, default=2)
