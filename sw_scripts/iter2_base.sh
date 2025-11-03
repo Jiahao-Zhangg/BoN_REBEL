@@ -42,7 +42,7 @@ exec 2> >(tee -a "$LOG_ERR" >&2)
 
 SECONDS=0
 OUTPUT_DIR="${TMP_RUN_ROOT}/outputs_seed_${SEED}_eta_${ETA}"
-HF_REPO_NAME="zjhhhh/iter2_adversary_min"
+HF_REPO_NAME="zjhhhh/iter2_base_min"
 EVAL_RESULTS_DIR="/fsx/gstevenw/qwen2.5_3B_Instruct_iter2_base_min_evaluation_results"
 
 # Derived configuration
