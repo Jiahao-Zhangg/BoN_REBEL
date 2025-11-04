@@ -51,7 +51,7 @@ TRAIN_INPUT_REPO="zjhhhh/iter2_base_min_expand_ver2_tokenized_gap_ratio_0.22"
 
 # Evaluation configuration
 BASE_MODEL="Qwen/Qwen2.5-3B-Instruct"
-EVAL_DATASET_NAME="zzjhhhh/iter2_base_min_expand_ver2_tokenized_gap_ratio_0.22"
+EVAL_DATASET_NAME="zjhhhh/iter2_base_min_expand_ver2_tokenized_gap_ratio_0.22"
 REWARD_MODEL="RLHFlow/ArmoRM-Llama3-8B-v0.1"
 EVAL_MAXLEN=2048
 BEST_OF_N=1
@@ -255,8 +255,3 @@ ELAPSED_HOURS=$((ELAPSED_SECONDS / 3600))
 ELAPSED_MINUTES=$(((ELAPSED_SECONDS % 3600) / 60))
 ELAPSED_REMAINDER=$((ELAPSED_SECONDS % 60))
 printf "Total elapsed time: %02dh:%02dm:%02ds\n" "$ELAPSED_HOURS" "$ELAPSED_MINUTES" "$ELAPSED_REMAINDER"
-
-if [ -d "$TMP_RUN_ROOT" ]; then
-    echo "Cleaning up temporary training directory: $TMP_RUN_ROOT"
-    rm -rf "$TMP_RUN_ROOT"
-fi
