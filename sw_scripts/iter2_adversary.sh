@@ -23,17 +23,17 @@ BON="true"                  # Toggle Best-of-N training behaviour for rebel.py
 SEED="555134"               # Random seed for reproducible runs
 JOB_RUN_ID="${JOB_RUN_ID:-$(date +%s)}"
 TMP_BASE="/fsx/gstevenw/testing_alignment_algos/BoN_REBEL/tmp"
-TMP_RUN_ROOT="${TMP_BASE%/}/iter2_adversary_min_${USER}/${JOB_RUN_ID}"
+TMP_RUN_ROOT="${TMP_BASE%/}/iter2_adversary_min_ver1_${USER}/${JOB_RUN_ID}"
 mkdir -p "$TMP_RUN_ROOT"
 
 # Optional explicit WandB run name; keep original prefix, append compact timestamp
 # If RUN_NAME is preset in the environment, it is used as-is.
 RUN_ID="${RUN_ID:-$(date +%y%m%d%H%M)}"
-RUN_NAME="${RUN_NAME:-iter2_adversary_min_${RUN_ID}}"
+RUN_NAME="${RUN_NAME:-iter2_adversary_min_ver1_${RUN_ID}}"
 
 LOG_DIR="${REBEL_LOG_DIR:-../logs}"
-LOG_OUT="${LOG_DIR%/}/iter2_adversary_min.out"
-LOG_ERR="${LOG_DIR%/}/iter2_adversary_min.err"
+LOG_OUT="${LOG_DIR%/}/iter2_adversary_min_ver1.out"
+LOG_ERR="${LOG_DIR%/}/iter2_adversary_min_ver1.err"
 mkdir -p "$LOG_DIR"
 
 # Mirror stdout/stderr to log files while keeping console output
@@ -42,24 +42,17 @@ exec 2> >(tee -a "$LOG_ERR" >&2)
 
 SECONDS=0
 OUTPUT_DIR="${TMP_RUN_ROOT}/outputs_seed_${SEED}_eta_${ETA}"
-HF_REPO_NAME="zjhhhh/iter2_adversary_min"
-EVAL_RESULTS_DIR="/fsx/gstevenw/qwen2.5_3B_Instruct_iter2_adversary_min_evaluation_results"
+HF_REPO_NAME="zjhhhh/iter2_adversary_min_ver1"
 
-# Derived configuration
+############################
+# Training configuration   #
+############################
 GRADIENT_ACCUMULATION_STEPS=$((128 / WORLD_SIZE))
-TRAIN_INPUT_REPO="zjhhhh/iter2_adversary_min_expand_ver2_tokenized_gap_ratio_0.22"
-
-# Evaluation configuration
-BASE_MODEL="Qwen/Qwen2.5-3B-Instruct"
-EVAL_DATASET_NAME="zjhhhh/iter2_adversary_min_expand_ver2_tokenized_gap_ratio_0.22"
-REWARD_MODEL="RLHFlow/ArmoRM-Llama3-8B-v0.1"
-EVAL_MAXLEN=2048
-BEST_OF_N=1
-EVAL_WORLD_SIZE=4
-EVAL_MAX_SAMPLES="1000"
+TRAIN_INPUT_REPO="zjhhhh/iter2_adversary_min_expand_ver1_tokenized_gap_ratio_0.22"
+# Base model used to initialize training
+BASE_MODEL="zjhhhh/qwen2.5_3B_Instruct_min_gap_seed_555134_eta_1e4_step_382_final"
 
 mkdir -p "$OUTPUT_DIR"
-mkdir -p "$EVAL_RESULTS_DIR"
 
 
 echo "Starting reward training pipeline from $(pwd)"
@@ -82,6 +75,7 @@ TRAIN_CMD=(
     --num_processes "$WORLD_SIZE"
     src/ultrafeedback_judge/rebel_save.py
     --output_dir "$OUTPUT_DIR"
+    --base_model "$BASE_MODEL"
     --rebel.eta "$ETA"
     --total_episodes "$TOTAL_EPISODES"
     --task.input_repo "$TRAIN_INPUT_REPO"
@@ -158,7 +152,7 @@ for CKPT_DIR in "${CHECKPOINT_DIRS[@]}"; do
     if python save_model.py \
         --checkpoint_path "$CKPT_DIR" \
         --hf_repo "$HF_STEP_REPO" \
-        --model "Qwen/Qwen2.5-3B-Instruct"; then
+        --model "$BASE_MODEL"; then
         CHECKPOINT_ARGS+=("$HF_STEP_REPO")
         echo "Upload succeeded for $CKPT_DIR; deleting checkpoint to save space"
         rm -rf "$CKPT_DIR"
@@ -173,71 +167,6 @@ if [ ${#CHECKPOINT_ARGS[@]} -eq 0 ]; then
     exit 1
 fi
 
-# Step 4: Reward evaluation (commented out)
-echo "Step 4: Reward evaluation skipped (commented out)."
-EVAL_RESULTS_FILE="evaluation_skipped"
-
-: <<'EVAL_DISABLED'
-cd src/ultrafeedback_largebatch
-
-set +u
-conda activate new_vllm
-set -u
-
-export VLLM_DISABLE_MEMORY_PROFILING=1
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
-
-mkdir -p "$EVAL_RESULTS_DIR"
-EVAL_RESULTS_FILE="$EVAL_RESULTS_DIR/reward_evaluation_seed_${SEED}_eta_${ETA}_$(date +%Y%m%d_%H%M%S).txt"
-
-MODELS=("$BASE_MODEL")
-MODELS+=("${CHECKPOINT_ARGS[@]}")
-if [ ${#MODELS[@]} -lt 2 ]; then
-    echo "Error: At least two models are required for evaluation (base + checkpoints)."
-    exit 1
-fi
-
-MODEL_NAMES=("Base")
-for repo in "${CHECKPOINT_ARGS[@]}"; do
-    MODEL_NAMES+=("$(basename "$repo")")
-done
-
-echo "Evaluating the following models:"
-for idx in "${!MODELS[@]}"; do
-    if [ ${#MODEL_NAMES[@]} -gt "$idx" ]; then
-        echo "  $((idx + 1)). ${MODEL_NAMES[$idx]} -> ${MODELS[$idx]}"
-    else
-        echo "  $((idx + 1)). ${MODELS[$idx]}"
-    fi
-done
-
-EVAL_CMD=(python simple_evaluate.py)
-EVAL_CMD+=(--models)
-EVAL_CMD+=("${MODELS[@]}")
-
-if [ ${#MODEL_NAMES[@]} -eq ${#MODELS[@]} ]; then
-    EVAL_CMD+=(--model_names)
-    EVAL_CMD+=("${MODEL_NAMES[@]}")
-fi
-
-EVAL_CMD+=(--dataset_name "$EVAL_DATASET_NAME")
-EVAL_CMD+=(--reward_model "$REWARD_MODEL")
-EVAL_CMD+=(--maxlen "$EVAL_MAXLEN")
-EVAL_CMD+=(--n "$BEST_OF_N")
-EVAL_CMD+=(--world_size "$EVAL_WORLD_SIZE")
-
-if [ -n "$EVAL_MAX_SAMPLES" ]; then
-    EVAL_CMD+=(--max_samples "$EVAL_MAX_SAMPLES")
-fi
-
-echo "Running: ${EVAL_CMD[*]}"
-"${EVAL_CMD[@]}" | tee "$EVAL_RESULTS_FILE"
-
-echo "Evaluation completed! Results saved to: $EVAL_RESULTS_FILE"
-
-cd - > /dev/null
-EVAL_DISABLED
-
 # Summary output
 echo "=========================================="
 echo "Reward Pipeline Finished Successfully!"
@@ -247,7 +176,6 @@ echo "Total episodes: $TOTAL_EPISODES"
 echo "Gradient accumulation steps: $GRADIENT_ACCUMULATION_STEPS"
 echo "Seed: $SEED"
 echo "Uploaded checkpoints: ${CHECKPOINT_ARGS[*]}"
-echo "Evaluation status: $EVAL_RESULTS_FILE"
 echo "=========================================="
 
 ELAPSED_SECONDS=$SECONDS
