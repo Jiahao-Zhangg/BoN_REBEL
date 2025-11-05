@@ -43,7 +43,7 @@ if [ "$SLURMD_NODENAME" != "$ASSIGNED_NODE" ]; then
 fi
 # Define paths
 SCRIPT_PATH="src/checklist_judge_data_parallel/run_inference_on_shard_iter2_robust.py"
-SHARD_DIR="./iter2_shards_min"
+SHARD_DIR="./iter2_ver2_shards_min"
 OUTPUT_DIR="./inference_scores_iter2_ver2_min"
 JUDGE_MODEL="Qwen/Qwen3-14B"
 # Calculate shard indices for this job (8 shards per job, starting from shard 48)
