@@ -184,7 +184,3 @@ ELAPSED_MINUTES=$(((ELAPSED_SECONDS % 3600) / 60))
 ELAPSED_REMAINDER=$((ELAPSED_SECONDS % 60))
 printf "Total elapsed time: %02dh:%02dm:%02ds\n" "$ELAPSED_HOURS" "$ELAPSED_MINUTES" "$ELAPSED_REMAINDER"
 
-if [ -d "$TMP_RUN_ROOT" ]; then
-    echo "Cleaning up temporary training directory: $TMP_RUN_ROOT"
-    rm -rf "$TMP_RUN_ROOT"
-fi
