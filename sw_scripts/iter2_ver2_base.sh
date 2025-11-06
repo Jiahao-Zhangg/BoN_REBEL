@@ -32,8 +32,8 @@ RUN_ID="${RUN_ID:-$(date +%y%m%d%H%M)}"
 RUN_NAME="${RUN_NAME:-iter2_ver2_pad_base_min_${RUN_ID}}"
 
 LOG_DIR="${REBEL_LOG_DIR:-../logs}"
-LOG_OUT="${LOG_DIR%/}/iter2_ver2_base_min.out"
-LOG_ERR="${LOG_DIR%/}/iter2_ver2_base_min.err"
+LOG_OUT="${LOG_DIR%/}/iter2_ver2_pad_base_min.out"
+LOG_ERR="${LOG_DIR%/}/iter2_ver2_pad_base_min.err"
 mkdir -p "$LOG_DIR"
 
 # Mirror stdout/stderr to log files while keeping console output
