@@ -23,17 +23,17 @@ BON="true"                  # Toggle Best-of-N training behaviour for rebel.py
 SEED="555134"               # Random seed for reproducible runs
 JOB_RUN_ID="${JOB_RUN_ID:-$(date +%s)}"
 TMP_BASE="/fsx/gstevenw/testing_alignment_algos/BoN_REBEL/tmp"
-TMP_RUN_ROOT="${TMP_BASE%/}/iter2_adversary_min_ver2_${USER}/${JOB_RUN_ID}"
+TMP_RUN_ROOT="${TMP_BASE%/}/iter2_ver2_pad_adversary_min_${USER}/${JOB_RUN_ID}"
 mkdir -p "$TMP_RUN_ROOT"
 
 # Optional explicit WandB run name; keep original prefix, append compact timestamp
 # If RUN_NAME is preset in the environment, it is used as-is.
 RUN_ID="${RUN_ID:-$(date +%y%m%d%H%M)}"
-RUN_NAME="${RUN_NAME:-iter2_adversary_min_ver2_${RUN_ID}}"
+RUN_NAME="${RUN_NAME:-iter2_ver2_pad_adversary_min_${RUN_ID}}"
 
 LOG_DIR="${REBEL_LOG_DIR:-../logs}"
-LOG_OUT="${LOG_DIR%/}/iter2_ver2_adversary_min.out"
-LOG_ERR="${LOG_DIR%/}/iter2_ver2_adversary_min.err"
+LOG_OUT="${LOG_DIR%/}/iter2_ver2_pad_adversary_min.out"
+LOG_ERR="${LOG_DIR%/}/iter2_ver2_pad_adversary_min.err"
 mkdir -p "$LOG_DIR"
 
 # Mirror stdout/stderr to log files while keeping console output
@@ -42,13 +42,13 @@ exec 2> >(tee -a "$LOG_ERR" >&2)
 
 SECONDS=0
 OUTPUT_DIR="${TMP_RUN_ROOT}/outputs_seed_${SEED}_eta_${ETA}"
-HF_REPO_NAME="zjhhhh/iter2_ver2_adversary_min"
+HF_REPO_NAME="zjhhhh/iter2_ver2_pad_adversary_min"
 
 ############################
 # Training configuration   #
 ############################
 GRADIENT_ACCUMULATION_STEPS=$((128 / WORLD_SIZE))
-TRAIN_INPUT_REPO="zjhhhh/iter2_ver2_adversary_min_expand_ver2_tokenized_gap_ratio_0.22"
+TRAIN_INPUT_REPO="zjhhhh/iter2_ver2_pad_adversary_min_expand_ver2_tokenized_gap_ratio_0.22"
 # Base model used to initialize training
 BASE_MODEL="zjhhhh/qwen2.5_3B_Instruct_min_gap_seed_555134_eta_1e4_ver2_step_382_final"
 
