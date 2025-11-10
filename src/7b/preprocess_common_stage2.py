@@ -172,7 +172,7 @@ def main():
         )
 
         # 2) Filter responses by length across all selection/current/base response columns
-        response_pattern = re.compile(r'^(selection|current|base)_response_\d+$')
+        response_pattern = re.compile(r'^(selection|current|base|adversary)_response_\d+$')
         response_columns = sorted([name for name in ds.column_names if response_pattern.match(name)])
         if not response_columns:
             raise ValueError("Dataset is missing response columns required for length filtering.")
