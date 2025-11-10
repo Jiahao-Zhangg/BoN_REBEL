@@ -35,8 +35,6 @@ def parse_arguments():
                         help="If >0, filter top ratio by (g_chosen - g_reject) per split and push *_gap")
     parser.add_argument("--gap_shuffle_seed", type=int, default=None,
                         help="Shuffle seed used after gap filtering (None = no fixed seed)")
-    parser.add_argument("--debug_schema", action="store_true",
-                        help="If set, print debug info about detected score columns and exit on mismatch")
     return parser.parse_args()
 
 
@@ -113,70 +111,14 @@ def main():
             if c not in dataset.column_names:
                 raise ValueError(f"Expected preprocessed dataset to contain column '{c}'. Please run preprocess_common.py first.")
 
-        # Allow datasets that use either 'base' or 'adversary' terminology
-        response_pattern = re.compile(r'^(selection|current|base|adversary)_response_\d+$')
+        response_pattern = re.compile(r'^(selection|current|base)_response_\d+$')
         response_columns = sorted([name for name in dataset.column_names if response_pattern.match(name)])
         if not response_columns:
             raise ValueError("Dataset is missing response columns required for downstream tokenization.")
 
         escaped_score_type = re.escape(args.score_type)
-        # Detect whether score columns consistently use 'base' or 'adversary'.
-        # We require both selection_*_<key>_* and current_*_<key>_* to exist for the SAME key.
-        counts = {}
-        sel_present_keys = set()
-        cur_present_keys = set()
-        for candidate in ("base", "adversary"):
-            # Use single backslash \d in raw strings to match digits
-            sel_pat = re.compile(rf"^selection_(\d+)_{candidate}_(\d+)_({escaped_score_type})$")
-            cur_pat = re.compile(rf"^current_(\d+)_{candidate}_(\d+)_({escaped_score_type})$")
-            sel_count = sum(1 for n in dataset.column_names if sel_pat.match(n))
-            cur_count = sum(1 for n in dataset.column_names if cur_pat.match(n))
-            counts[candidate] = (sel_count, cur_count)
-            if sel_count > 0:
-                sel_present_keys.add(candidate)
-            if cur_count > 0:
-                cur_present_keys.add(candidate)
-
-            if args.debug_schema:
-                sel_examples = [n for n in dataset.column_names if sel_pat.match(n)][:5]
-                cur_examples = [n for n in dataset.column_names if cur_pat.match(n)][:5]
-                print(f"[debug] key={candidate} score_type={args.score_type}: sel_count={sel_count}, cur_count={cur_count}")
-                if sel_examples:
-                    print(f"[debug] sample selection cols: {sel_examples}")
-                if cur_examples:
-                    print(f"[debug] sample current cols: {cur_examples}")
-
-        valid_keys = sel_present_keys & cur_present_keys
-        if len(valid_keys) == 1:
-            detected_key = next(iter(valid_keys))
-        elif len(valid_keys) > 1:
-            # Ambiguous: both base and adversary appear complete. Ask user to disambiguate by cleaning dataset.
-            raise ValueError(
-                "Both 'base' and 'adversary' score families are present; please keep only one naming scheme. "
-                f"Counts: base sel={counts.get('base',(0,0))[0]}, cur={counts.get('base',(0,0))[1]}; "
-                f"adversary sel={counts.get('adversary',(0,0))[0]}, cur={counts.get('adversary',(0,0))[1]}."
-            )
-        else:
-            # No single key has both families; error with specifics.
-            msg = (
-                "Could not find matching selection/current score columns for the same key. "
-                f"Observed counts — base: sel={counts.get('base',(0,0))[0]}, cur={counts.get('base',(0,0))[1]}; "
-                f"adversary: sel={counts.get('adversary',(0,0))[0]}, cur={counts.get('adversary',(0,0))[1]}."
-            )
-            if args.debug_schema:
-                print("[debug] columns:")
-                print(dataset.column_names)
-                # Also surface similar-looking names to help spot typos/case/spacing issues
-                near_sel = [n for n in dataset.column_names if 'selection_' in n and '_adversary_' in n]
-                near_cur = [n for n in dataset.column_names if 'current_' in n and '_adversary_' in n]
-                if near_sel:
-                    print(f"[debug] near selection adversary-like cols (first 10): {near_sel[:10]}")
-                if near_cur:
-                    print(f"[debug] near current adversary-like cols (first 10): {near_cur[:10]}")
-            raise ValueError(msg)
-
-        selection_score_pattern = re.compile(rf"^selection_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
-        current_score_pattern = re.compile(rf"^current_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
+        selection_score_pattern = re.compile(rf"^selection_(\d+)_base_(\d+)_({escaped_score_type})$")
+        current_score_pattern = re.compile(rf"^current_(\d+)_base_(\d+)_({escaped_score_type})$")
         selection_ids = set()
         current_ids = set()
         base_ids = set()
@@ -194,20 +136,20 @@ def main():
         current_ids = sorted(current_ids)
         base_ids = sorted(base_ids)
         if not selection_ids:
-            raise ValueError("Dataset is missing selection score columns for the specified score type.")
+            raise ValueError("Dataset is missing selection-base score columns for the specified score type.")
         if not current_ids:
-            raise ValueError("Dataset is missing current score columns for the specified score type.")
+            raise ValueError("Dataset is missing current-base score columns for the specified score type.")
         if not base_ids:
             raise ValueError("Dataset is missing base indices for the specified score type.")
 
-        # Stream rows via generator to avoid building a huge dict-of-lists
+        # Build rows on-the-fly to avoid huge in-memory dict-of-lists
         def row_generator():
             for row in tqdm(dataset):
                 current_vectors = []
                 vector_len = None
                 for cur_id in current_ids:
                     for base_id in base_ids:
-                        key = f"current_{cur_id}_{detected_key}_{base_id}_{args.score_type}"
+                        key = f"current_{cur_id}_base_{base_id}_{args.score_type}"
                         raw_scores = row.get(key, None)
                         if raw_scores is None:
                             continue
@@ -221,11 +163,7 @@ def main():
                             )
                         current_vectors.append(p_vec)
                 if not current_vectors:
-                    raise ValueError("No current-base/adversary scores available to estimate P(x, pi, pi').")
-
-                stacked_current = np.stack(current_vectors, axis=0)
-                estimated_p = np.mean(stacked_current, axis=0)
-                j_star = int(np.argmin(estimated_p))
+                    raise ValueError("No current-base scores available to estimate P(x, pi, pi').")
 
                 g_values = []
                 selection_tokens = []
@@ -233,21 +171,17 @@ def main():
                 for sel_id in selection_ids:
                     per_base_scores = []
                     for base_id in base_ids:
-                        key = f"selection_{sel_id}_{detected_key}_{base_id}_{args.score_type}"
+                        key = f"selection_{sel_id}_base_{base_id}_{args.score_type}"
                         raw_scores = row.get(key, None)
                         if raw_scores is None:
                             continue
                         p_vec = np.array(raw_scores, dtype=float)
                         p_vec = np.atleast_1d(p_vec)
-                        if j_star >= p_vec.shape[0]:
-                            raise ValueError(
-                                f"Score vector for {key} missing coordinate j*={j_star} (length={p_vec.shape[0]})."
-                            )
-                        per_base_scores.append(float(p_vec[j_star]))
+                        per_base_scores.append(float(np.mean(p_vec)))
 
                     if not per_base_scores:
                         raise ValueError(
-                            f"No selection-{detected_key} scores available for selection {sel_id} to compute gradient."
+                            f"No selection-base scores available for selection {sel_id} to compute gradient."
                         )
 
                     g_values.append(float(np.mean(per_base_scores)))
@@ -309,7 +243,7 @@ def main():
 
                     yield example
 
-        # Explicit features for faster Arrow construction; use float64 for rewards/g-values
+        # Provide explicit features to skip slow type inference
         features = dataset.features.copy()
         features.update({
             "chosen": Value("string"),

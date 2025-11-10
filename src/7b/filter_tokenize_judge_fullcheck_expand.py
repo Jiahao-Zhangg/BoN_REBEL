@@ -2,29 +2,27 @@ import argparse
 import numpy as np
 import re
 import torch
+import torch.nn.functional as F
 from datasets import load_dataset, Dataset, DatasetDict, Features, Value, Sequence
 from tqdm import tqdm
-from transformers import AutoTokenizer
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModelForCausalLM
+from typing import Dict, List
 
 torch.set_printoptions(threshold=10_000)
 
-
-# WARNING: Magic number, make sure it works for your model
 SYS_PROMPT_LEN = 24
 
-
 def parse_arguments():
-    parser = argparse.ArgumentParser(
-        description="Filter + tokenize using worst-coordinate gradients from current/base scores.",
-    )
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
+    # Default to MisDrifter/test_dataset which contains selection/current/base score vectors
     parser.add_argument("--input_repo", type=str, default="zjhhhh/whole_sw_maxlen_8192_rescale",
-                        help="HF dataset repo to load (expects selection/current/base responses and score vectors + requirements)")
+                        help="HF dataset repo to load (expects selection/current/base responses and score vectors)")
     parser.add_argument("--maxlen", type=int, default=2048)
     parser.add_argument("--maxlen_prompt", type=int, default=1024)
     parser.add_argument("--beta", type=float, default=1.0, help="beta parameter for A/B/g computation")
-    parser.add_argument("--slicing_idx", type=int, default=24,
-                        help="Fallback slicing index if model-specific detection not used")
+    parser.add_argument("--slicing_idx", type=int, default=24)
     parser.add_argument("--score_type", type=str, default="mean", choices=["mean", "majority"],
                         help="Use all mean or all majority score vectors when computing preferences")
     parser.add_argument("--output_repo_prefix", type=str, default=None,
@@ -35,19 +33,18 @@ def parse_arguments():
                         help="If >0, filter top ratio by (g_chosen - g_reject) per split and push *_gap")
     parser.add_argument("--gap_shuffle_seed", type=int, default=None,
                         help="Shuffle seed used after gap filtering (None = no fixed seed)")
-    parser.add_argument("--debug_schema", action="store_true",
-                        help="If set, print debug info about detected score columns and exit on mismatch")
     return parser.parse_args()
 
 
 def get_message(instruction=None, response=None):
-    assert instruction is not None or response is not None
 
-    if response is None:
+    assert instruction != None or response != None
+
+    if response == None:
         message = [
             {"role": "user", "content": instruction},
         ]
-    elif instruction is None:
+    elif instruction == None:
         message = [
             {"role": "assistant", "content": response}
         ]
@@ -56,6 +53,7 @@ def get_message(instruction=None, response=None):
             {"role": "user", "content": instruction},
             {"role": "assistant", "content": response}
         ]
+
     return message
 
 
@@ -63,13 +61,17 @@ def filter_same_responses(row):
     return row['chosen'] != row['reject']
 
 
+# BTL no longer used; probabilities are provided by dataset
+
+
 def main():
+
+    # init
     args = parse_arguments()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     tokenizer_left = AutoTokenizer.from_pretrained(args.model, padding_side='left')
-
-    # Ensure PAD handling sensible
+    # Prefer explicit [PAD] token for Qwen so it shows in decoded strings
     if "Qwen" in args.model:
         if tokenizer.pad_token != "[PAD]":
             tokenizer.add_special_tokens({"pad_token": "[PAD]"})
@@ -91,13 +93,16 @@ def main():
 
     if "Qwen" in args.model:
         slicing_idx_used = SYS_PROMPT_LEN
+        print(f'slicing index used (fixed): {slicing_idx_used}')
     else:
         slicing_idx_used = args.slicing_idx
 
+    # Load both splits from preprocessed dataset
     ds_dict = load_dataset(args.input_repo)
     if 'train' not in ds_dict or 'test' not in ds_dict:
         raise ValueError("Preprocessed dataset must contain 'train' and 'test' splits.")
 
+    # Optionally limit rows in each split for debugging
     if args.limit_rows and args.limit_rows > 0:
         n_train = min(args.limit_rows, len(ds_dict['train']))
         n_test = min(args.limit_rows, len(ds_dict['test']))
@@ -106,6 +111,7 @@ def main():
             'test': ds_dict['test'].select(range(n_test)),
         })
 
+    # Process a single split
     def process_split(dataset, is_train):
         print('split length:', len(dataset))
         required_cols = ["qwen_prompt", "qwen_prompt_tokens"]
@@ -113,70 +119,14 @@ def main():
             if c not in dataset.column_names:
                 raise ValueError(f"Expected preprocessed dataset to contain column '{c}'. Please run preprocess_common.py first.")
 
-        # Allow datasets that use either 'base' or 'adversary' terminology
-        response_pattern = re.compile(r'^(selection|current|base|adversary)_response_\d+$')
+        response_pattern = re.compile(r'^(selection|current|base)_response_\d+$')
         response_columns = sorted([name for name in dataset.column_names if response_pattern.match(name)])
         if not response_columns:
             raise ValueError("Dataset is missing response columns required for downstream tokenization.")
 
         escaped_score_type = re.escape(args.score_type)
-        # Detect whether score columns consistently use 'base' or 'adversary'.
-        # We require both selection_*_<key>_* and current_*_<key>_* to exist for the SAME key.
-        counts = {}
-        sel_present_keys = set()
-        cur_present_keys = set()
-        for candidate in ("base", "adversary"):
-            # Use single backslash \d in raw strings to match digits
-            sel_pat = re.compile(rf"^selection_(\d+)_{candidate}_(\d+)_({escaped_score_type})$")
-            cur_pat = re.compile(rf"^current_(\d+)_{candidate}_(\d+)_({escaped_score_type})$")
-            sel_count = sum(1 for n in dataset.column_names if sel_pat.match(n))
-            cur_count = sum(1 for n in dataset.column_names if cur_pat.match(n))
-            counts[candidate] = (sel_count, cur_count)
-            if sel_count > 0:
-                sel_present_keys.add(candidate)
-            if cur_count > 0:
-                cur_present_keys.add(candidate)
-
-            if args.debug_schema:
-                sel_examples = [n for n in dataset.column_names if sel_pat.match(n)][:5]
-                cur_examples = [n for n in dataset.column_names if cur_pat.match(n)][:5]
-                print(f"[debug] key={candidate} score_type={args.score_type}: sel_count={sel_count}, cur_count={cur_count}")
-                if sel_examples:
-                    print(f"[debug] sample selection cols: {sel_examples}")
-                if cur_examples:
-                    print(f"[debug] sample current cols: {cur_examples}")
-
-        valid_keys = sel_present_keys & cur_present_keys
-        if len(valid_keys) == 1:
-            detected_key = next(iter(valid_keys))
-        elif len(valid_keys) > 1:
-            # Ambiguous: both base and adversary appear complete. Ask user to disambiguate by cleaning dataset.
-            raise ValueError(
-                "Both 'base' and 'adversary' score families are present; please keep only one naming scheme. "
-                f"Counts: base sel={counts.get('base',(0,0))[0]}, cur={counts.get('base',(0,0))[1]}; "
-                f"adversary sel={counts.get('adversary',(0,0))[0]}, cur={counts.get('adversary',(0,0))[1]}."
-            )
-        else:
-            # No single key has both families; error with specifics.
-            msg = (
-                "Could not find matching selection/current score columns for the same key. "
-                f"Observed counts — base: sel={counts.get('base',(0,0))[0]}, cur={counts.get('base',(0,0))[1]}; "
-                f"adversary: sel={counts.get('adversary',(0,0))[0]}, cur={counts.get('adversary',(0,0))[1]}."
-            )
-            if args.debug_schema:
-                print("[debug] columns:")
-                print(dataset.column_names)
-                # Also surface similar-looking names to help spot typos/case/spacing issues
-                near_sel = [n for n in dataset.column_names if 'selection_' in n and '_adversary_' in n]
-                near_cur = [n for n in dataset.column_names if 'current_' in n and '_adversary_' in n]
-                if near_sel:
-                    print(f"[debug] near selection adversary-like cols (first 10): {near_sel[:10]}")
-                if near_cur:
-                    print(f"[debug] near current adversary-like cols (first 10): {near_cur[:10]}")
-            raise ValueError(msg)
-
-        selection_score_pattern = re.compile(rf"^selection_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
-        current_score_pattern = re.compile(rf"^current_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
+        selection_score_pattern = re.compile(rf"^selection_(\d+)_base_(\d+)_({escaped_score_type})$")
+        current_score_pattern = re.compile(rf"^current_(\d+)_base_(\d+)_({escaped_score_type})$")
         selection_ids = set()
         current_ids = set()
         base_ids = set()
@@ -194,63 +144,63 @@ def main():
         current_ids = sorted(current_ids)
         base_ids = sorted(base_ids)
         if not selection_ids:
-            raise ValueError("Dataset is missing selection score columns for the specified score type.")
+            raise ValueError("Dataset is missing selection-base score columns for the specified score type.")
         if not current_ids:
-            raise ValueError("Dataset is missing current score columns for the specified score type.")
+            raise ValueError("Dataset is missing current-base score columns for the specified score type.")
         if not base_ids:
             raise ValueError("Dataset is missing base indices for the specified score type.")
 
         # Stream rows via generator to avoid building a huge dict-of-lists
         def row_generator():
             for row in tqdm(dataset):
-                current_vectors = []
-                vector_len = None
-                for cur_id in current_ids:
-                    for base_id in base_ids:
-                        key = f"current_{cur_id}_{detected_key}_{base_id}_{args.score_type}"
+                beta = args.beta
+                # Compute base weights from current-base scores
+                weights_by_base = {}
+                for base_id in base_ids:
+                    cur_vals = []
+                    for cur_id in current_ids:
+                        key = f"current_{cur_id}_base_{base_id}_{args.score_type}"
                         raw_scores = row.get(key, None)
                         if raw_scores is None:
                             continue
                         p_vec = np.array(raw_scores, dtype=float)
                         p_vec = np.atleast_1d(p_vec)
-                        if vector_len is None:
-                            vector_len = p_vec.shape[0]
-                        elif p_vec.shape[0] != vector_len:
-                            raise ValueError(
-                                f"Mismatched score vector length for {key}: expected {vector_len}, got {p_vec.shape[0]}"
-                            )
-                        current_vectors.append(p_vec)
-                if not current_vectors:
-                    raise ValueError("No current-base/adversary scores available to estimate P(x, pi, pi').")
+                        cur_vals.append(float(np.mean(p_vec)))
+                    if cur_vals:
+                        mean_cur = float(np.mean(cur_vals))
+                        weights_by_base[base_id] = float(np.exp(-(mean_cur / beta)))
 
-                stacked_current = np.stack(current_vectors, axis=0)
-                estimated_p = np.mean(stacked_current, axis=0)
-                j_star = int(np.argmin(estimated_p))
+                if not weights_by_base:
+                    raise ValueError("No current-base scores available to estimate base weights.")
 
+                A_denom = float(sum(weights_by_base.values()))
+
+                # Compute g(z) using weighted selection scores
                 g_values = []
                 selection_tokens = []
                 selection_texts = []
                 for sel_id in selection_ids:
-                    per_base_scores = []
+                    weighted_scores = []
                     for base_id in base_ids:
-                        key = f"selection_{sel_id}_{detected_key}_{base_id}_{args.score_type}"
+                        weight = weights_by_base.get(base_id)
+                        if weight is None:
+                            continue
+                        key = f"selection_{sel_id}_base_{base_id}_{args.score_type}"
                         raw_scores = row.get(key, None)
                         if raw_scores is None:
                             continue
                         p_vec = np.array(raw_scores, dtype=float)
                         p_vec = np.atleast_1d(p_vec)
-                        if j_star >= p_vec.shape[0]:
-                            raise ValueError(
-                                f"Score vector for {key} missing coordinate j*={j_star} (length={p_vec.shape[0]})."
-                            )
-                        per_base_scores.append(float(p_vec[j_star]))
+                        weighted_scores.append(weight * float(np.mean(p_vec)))
 
-                    if not per_base_scores:
+                    if not weighted_scores:
                         raise ValueError(
-                            f"No selection-{detected_key} scores available for selection {sel_id} to compute gradient."
+                            f"No selection-base scores available for selection {sel_id} to compute g."
                         )
 
-                    g_values.append(float(np.mean(per_base_scores)))
+                    numerator = float(np.sum(weighted_scores))
+                    g_z = numerator / A_denom
+                    g_values.append(float(g_z))
 
                     sel_token = tokenizer.apply_chat_template(
                         get_message(response=row[f"selection_response_{sel_id}"]),
@@ -309,7 +259,7 @@ def main():
 
                     yield example
 
-        # Explicit features for faster Arrow construction; use float64 for rewards/g-values
+        # Explicit features to speed up Arrow construction and use float64
         features = dataset.features.copy()
         features.update({
             "chosen": Value("string"),
@@ -324,18 +274,18 @@ def main():
             "g_reject": Value("float64"),
         })
 
-        generated = Dataset.from_generator(row_generator, features=Features(features))
+        streamed = Dataset.from_generator(row_generator, features=Features(features))
         print('built dataset from generator!')
-        generated = generated.filter(lambda row: filter_same_responses(row))
-        print('filtered same responses:', len(generated))
-        return generated
+        streamed = streamed.filter(lambda row: filter_same_responses(row))
+        print('filtered same responses:', len(streamed))
+        return streamed
 
     train_processed = process_split(ds_dict['train'], is_train=True)
     test_processed = process_split(ds_dict['test'], is_train=False)
 
     out = DatasetDict({"train": train_processed, "test": test_processed})
     repo_prefix = args.output_repo_prefix if args.output_repo_prefix else args.input_repo
-    base_repo = repo_prefix + '_min_expand_ver2_tokenized'
+    base_repo = repo_prefix + '_beta_' + str(args.beta) + '_multi_expand_tokenized'
     out.push_to_hub(base_repo)
 
     # Optional gap filtering and secondary upload
@@ -349,7 +299,6 @@ def main():
             filtered = sorted_by_gap.select(range(keep_count)).remove_columns(["_gap"]).shuffle(seed=args.gap_shuffle_seed)
             return filtered
 
-        
         gap_out = DatasetDict({
             "train": gap_filter(out["train"]),
             "test": out["test"],

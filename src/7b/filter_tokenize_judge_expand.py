@@ -3,7 +3,7 @@ import numpy as np
 import re
 import torch
 import torch.nn.functional as F
-from datasets import load_dataset, Dataset, DatasetDict
+from datasets import load_dataset, Dataset, DatasetDict, Features, Value, Sequence
 from tqdm import tqdm
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModelForCausalLM
 from typing import Dict, List
@@ -119,14 +119,28 @@ def main():
             if c not in dataset.column_names:
                 raise ValueError(f"Expected preprocessed dataset to contain column '{c}'. Please run preprocess_common.py first.")
 
-        response_pattern = re.compile(r'^(selection|current|base)_response_\d+$')
+        # Allow datasets that use either 'base' or 'adversary' terminology
+        response_pattern = re.compile(r'^(selection|current|base|adversary)_response_\d+$')
         response_columns = sorted([name for name in dataset.column_names if response_pattern.match(name)])
         if not response_columns:
             raise ValueError("Dataset is missing response columns required for downstream tokenization.")
 
         escaped_score_type = re.escape(args.score_type)
-        selection_score_pattern = re.compile(rf"^selection_(\d+)_base_(\d+)_({escaped_score_type})$")
-        current_score_pattern = re.compile(rf"^current_(\d+)_base_(\d+)_({escaped_score_type})$")
+        # Detect whether score columns use 'base' or 'adversary'
+        detected_key = None
+        for candidate in ("base", "adversary"):
+            sel_pat = re.compile(rf"^selection_(\\d+)_{candidate}_(\\d+)_({escaped_score_type})$")
+            cur_pat = re.compile(rf"^current_(\\d+)_{candidate}_(\\d+)_({escaped_score_type})$")
+            sel_hits = any(sel_pat.match(n) for n in dataset.column_names)
+            cur_hits = any(cur_pat.match(n) for n in dataset.column_names)
+            if sel_hits and cur_hits:
+                detected_key = candidate
+                break
+        if detected_key is None:
+            raise ValueError("Could not find score columns using either 'base' or 'adversary'.")
+
+        selection_score_pattern = re.compile(rf"^selection_(\\d+)_{detected_key}_(\\d+)_({escaped_score_type})$")
+        current_score_pattern = re.compile(rf"^current_(\\d+)_{detected_key}_(\\d+)_({escaped_score_type})$")
         selection_ids = set()
         current_ids = set()
         base_ids = set()
@@ -150,156 +164,157 @@ def main():
         if not base_ids:
             raise ValueError("Dataset is missing base indices for the specified score type.")
 
-        expanded_data = {col: [] for col in dataset.column_names}
-        expanded_data.update({
-            "chosen": [],
-            "chosen_reward": [],
-            "qwen_chosen": [],
-            "qwen_chosen_tokens": [],
-            "reject": [],
-            "reject_reward": [],
-            "qwen_reject": [],
-            "qwen_reject_tokens": [],
-            "g_chosen": [],
-            "g_reject": [],
-            "j_star": [],
+        # Stream rows via generator to avoid building a huge dict-of-lists
+        def row_generator():
+            for row in tqdm(dataset):
+                beta = args.beta
+                # Build current vs base/adversary matrices per base: shape (K=len(current_ids), L)
+                current_base_scores = []
+                vector_len = None
+                for base_id in base_ids:
+                    rows = []
+                    for cur_id in current_ids:
+                        key = f"current_{cur_id}_{detected_key}_{base_id}_{args.score_type}"
+                        raw_scores = row.get(key, None)
+                        if raw_scores is None:
+                            continue
+                        p_vec = np.array(raw_scores, dtype=float)
+                        p_vec = np.atleast_1d(p_vec)
+                        if vector_len is None:
+                            vector_len = p_vec.shape[0]
+                        elif p_vec.shape[0] != vector_len:
+                            raise ValueError(
+                                f"Mismatched score vector length for {key}: expected {vector_len}, got {p_vec.shape[0]}"
+                            )
+                        rows.append(p_vec)
+                    if not rows:
+                        continue
+                    current_base_scores.append(np.stack(rows, axis=0))  # (K, L)
+                if not current_base_scores:
+                    raise ValueError("No current-base/adversary scores available to estimate A_vec and j_star.")
+
+                # Compute exp_terms per base: exp(- (1/K) * sum_k P_m / beta) for each m
+                exp_terms_list = []  # list of vectors (L,)
+                for cb in current_base_scores:
+                    inner_sums = np.sum(cb, axis=0) / (beta * cb.shape[0])  # (L,)
+                    exp_terms_list.append(np.exp(-inner_sums))
+
+                # A_m(x) = sum_i exp_terms_i[m] across bases
+                A_vec = exp_terms_list[0]
+                for i in range(1, len(exp_terms_list)):
+                    A_vec = A_vec + exp_terms_list[i]
+                j_star = int(np.argmax(A_vec))
+
+                # Compute g(z) using weighted B at m*
+                g_values = []
+                selection_tokens = []
+                selection_texts = []
+                for sel_id in selection_ids:
+                    # Gather selection vectors per base
+                    p_z_vs_bases = []
+                    for base_index, base_id in enumerate(base_ids):
+                        key = f"selection_{sel_id}_{detected_key}_{base_id}_{args.score_type}"
+                        raw_scores = row.get(key, None)
+                        if raw_scores is None:
+                            continue
+                        p_vec = np.array(raw_scores, dtype=float)
+                        p_vec = np.atleast_1d(p_vec)
+                        if j_star >= p_vec.shape[0]:
+                            raise ValueError(
+                                f"Score vector for {key} missing coordinate j*={j_star} (length={p_vec.shape[0]})."
+                            )
+                        # Weighted by exp_terms at coordinate j_star for that base
+                        weight = exp_terms_list[base_index][j_star]
+                        p_z_vs_bases.append(float(p_vec[j_star]) * float(weight))
+
+                    if not p_z_vs_bases:
+                        raise ValueError(
+                            f"No selection-{detected_key} scores available for selection {sel_id} to compute g."
+                        )
+
+                    B_star = float(np.sum(p_z_vs_bases))
+                    g_z = B_star / float(A_vec[j_star])
+                    g_values.append(float(g_z))
+
+                    sel_token = tokenizer.apply_chat_template(
+                        get_message(response=row[f"selection_response_{sel_id}"]),
+                        add_generation_prompt=False,
+                        tokenize=True,
+                        padding='max_length',
+                        max_length=args.maxlen + slicing_idx_used,
+                    )[slicing_idx_used:]
+                    selection_tokens.append(list(sel_token))
+                    sel_text = tokenizer.decode(sel_token, skip_special_tokens=False)
+                    selection_texts.append(sel_text)
+                    assert len(sel_token) == args.maxlen
+                    if "Qwen" in args.model:
+                        assert not sel_text.lstrip().startswith("<|im_start|>assistant"), "Qwen selection should not include assistant header"
+                        assert ("<|eot_id|>" in sel_text) or ("<|im_end|>" in sel_text), "Qwen selection text should include end-of-turn marker"
+                        last_id = int(sel_token[-1])
+                        pid = tokenizer.pad_token_id
+                        eid = tokenizer.eos_token_id
+                        assert (pid is None or last_id == pid) or (eid is None or last_id == eid), "Qwen selection last token should be PAD or EOS"
+
+                selected_pairs = []
+                if is_train:
+                    for idx_a in range(len(selection_ids)):
+                        for idx_b in range(idx_a + 1, len(selection_ids)):
+                            higher_idx, lower_idx = idx_a, idx_b
+                            if g_values[higher_idx] < g_values[lower_idx]:
+                                higher_idx, lower_idx = lower_idx, higher_idx
+                            selected_pairs.append((higher_idx, lower_idx))
+                else:
+                    if g_values:
+                        g_array = np.array(g_values, dtype=float)
+                        if g_array.size >= 2:
+                            sorted_indices = np.argsort(g_array)
+                            lower_idx = int(sorted_indices[0])
+                            higher_idx = int(sorted_indices[-1])
+                            if higher_idx != lower_idx:
+                                selected_pairs.append((higher_idx, lower_idx))
+
+                for higher_idx, lower_idx in selected_pairs:
+                    higher_sel_id = selection_ids[higher_idx]
+                    lower_sel_id = selection_ids[lower_idx]
+
+                    example = {col: row[col] for col in dataset.column_names}
+                    example.update({
+                        "chosen": row[f"selection_response_{higher_sel_id}"],
+                        "reject": row[f"selection_response_{lower_sel_id}"],
+                        "qwen_chosen_tokens": selection_tokens[higher_idx],
+                        "qwen_reject_tokens": selection_tokens[lower_idx],
+                        "qwen_chosen": selection_texts[higher_idx],
+                        "qwen_reject": selection_texts[lower_idx],
+                        "chosen_reward": float(g_values[higher_idx]),
+                        "reject_reward": float(g_values[lower_idx]),
+                        "g_chosen": float(g_values[higher_idx]),
+                        "g_reject": float(g_values[lower_idx]),
+                        "j_star": int(j_star),
+                    })
+
+                    yield example
+
+        # Explicit features to speed up Arrow construction and use float64 for rewards/g-values
+        features = dataset.features.copy()
+        features.update({
+            "chosen": Value("string"),
+            "reject": Value("string"),
+            "qwen_chosen": Value("string"),
+            "qwen_reject": Value("string"),
+            "qwen_chosen_tokens": Sequence(Value("int64")),
+            "qwen_reject_tokens": Sequence(Value("int64")),
+            "chosen_reward": Value("float64"),
+            "reject_reward": Value("float64"),
+            "g_chosen": Value("float64"),
+            "g_reject": Value("float64"),
+            "j_star": Value("int64"),
         })
 
-        for row in tqdm(dataset):
-            beta = args.beta
-            # Build current vs base matrices per base: shape (K=len(current_ids), L)
-            current_base_scores = []
-            vector_len = None
-            for base_id in base_ids:
-                rows = []
-                for cur_id in current_ids:
-                    key = f"current_{cur_id}_base_{base_id}_{args.score_type}"
-                    raw_scores = row.get(key, None)
-                    if raw_scores is None:
-                        continue
-                    p_vec = np.array(raw_scores, dtype=float)
-                    p_vec = np.atleast_1d(p_vec)
-                    if vector_len is None:
-                        vector_len = p_vec.shape[0]
-                    elif p_vec.shape[0] != vector_len:
-                        raise ValueError(
-                            f"Mismatched score vector length for {key}: expected {vector_len}, got {p_vec.shape[0]}"
-                        )
-                    rows.append(p_vec)
-                if not rows:
-                    continue
-                current_base_scores.append(np.stack(rows, axis=0))  # (K, L)
-            if not current_base_scores:
-                raise ValueError("No current-base scores available to estimate A_vec and j_star.")
-
-            # Compute exp_terms per base: exp(- (1/K) * sum_k P_m / beta) for each m
-            exp_terms_list = []  # list of vectors (L,)
-            for cb in current_base_scores:
-                inner_sums = np.sum(cb, axis=0) / (beta * cb.shape[0])  # (L,)
-                exp_terms_list.append(np.exp(-inner_sums))
-
-            # A_m(x) = sum_i exp_terms_i[m] across bases
-            A_vec = exp_terms_list[0]
-            for i in range(1, len(exp_terms_list)):
-                A_vec = A_vec + exp_terms_list[i]
-            j_star = int(np.argmax(A_vec))
-
-            # Compute g(z) using weighted B at m*
-            g_values = []
-            selection_tokens = []
-            selection_texts = []
-            for sel_id in selection_ids:
-                # Gather selection vectors per base
-                p_z_vs_bases = []
-                for base_index, base_id in enumerate(base_ids):
-                    key = f"selection_{sel_id}_base_{base_id}_{args.score_type}"
-                    raw_scores = row.get(key, None)
-                    if raw_scores is None:
-                        continue
-                    p_vec = np.array(raw_scores, dtype=float)
-                    p_vec = np.atleast_1d(p_vec)
-                    if j_star >= p_vec.shape[0]:
-                        raise ValueError(
-                            f"Score vector for {key} missing coordinate j*={j_star} (length={p_vec.shape[0]})."
-                        )
-                    # Weighted by exp_terms at coordinate j_star for that base
-                    weight = exp_terms_list[base_index][j_star]
-                    p_z_vs_bases.append(float(p_vec[j_star]) * float(weight))
-
-                if not p_z_vs_bases:
-                    raise ValueError(
-                        f"No selection-base scores available for selection {sel_id} to compute g."
-                    )
-
-                B_star = float(np.sum(p_z_vs_bases))
-                g_z = B_star / float(A_vec[j_star])
-                g_values.append(float(g_z))
-
-                sel_token = tokenizer.apply_chat_template(
-                    get_message(response=row[f"selection_response_{sel_id}"]),
-                    add_generation_prompt=False,
-                    tokenize=True,
-                    padding='max_length',
-                    max_length=args.maxlen + slicing_idx_used,
-                )[slicing_idx_used:]
-                selection_tokens.append(list(sel_token))
-                sel_text = tokenizer.decode(sel_token, skip_special_tokens=False)
-                selection_texts.append(sel_text)
-                assert len(sel_token) == args.maxlen
-                if "Qwen" in args.model:
-                    assert not sel_text.lstrip().startswith("<|im_start|>assistant"), "Qwen selection should not include assistant header"
-                    assert ("<|eot_id|>" in sel_text) or ("<|im_end|>" in sel_text), "Qwen selection text should include end-of-turn marker"
-                    last_id = int(sel_token[-1])
-                    pid = tokenizer.pad_token_id
-                    eid = tokenizer.eos_token_id
-                    assert (pid is None or last_id == pid) or (eid is None or last_id == eid), "Qwen selection last token should be PAD or EOS"
-
-            selected_pairs = []
-            if is_train:
-                for idx_a in range(len(selection_ids)):
-                    for idx_b in range(idx_a + 1, len(selection_ids)):
-                        higher_idx, lower_idx = idx_a, idx_b
-                        if g_values[higher_idx] < g_values[lower_idx]:
-                            higher_idx, lower_idx = lower_idx, higher_idx
-                        selected_pairs.append((higher_idx, lower_idx))
-            else:
-                if g_values:
-                    g_array = np.array(g_values, dtype=float)
-                    if g_array.size >= 2:
-                        sorted_indices = np.argsort(g_array)
-                        lower_idx = int(sorted_indices[0])
-                        higher_idx = int(sorted_indices[-1])
-                        if higher_idx != lower_idx:
-                            selected_pairs.append((higher_idx, lower_idx))
-
-            for higher_idx, lower_idx in selected_pairs:
-                for col in dataset.column_names:
-                    expanded_data[col].append(row[col])
-
-                higher_sel_id = selection_ids[higher_idx]
-                lower_sel_id = selection_ids[lower_idx]
-
-                expanded_data["chosen"].append(row[f"selection_response_{higher_sel_id}"])
-                expanded_data["reject"].append(row[f"selection_response_{lower_sel_id}"])
-
-                expanded_data["qwen_chosen_tokens"].append(selection_tokens[higher_idx])
-                expanded_data["qwen_reject_tokens"].append(selection_tokens[lower_idx])
-
-                expanded_data["qwen_chosen"].append(selection_texts[higher_idx])
-                expanded_data["qwen_reject"].append(selection_texts[lower_idx])
-
-                expanded_data["chosen_reward"].append(float(g_values[higher_idx]))
-                expanded_data["reject_reward"].append(float(g_values[lower_idx]))
-
-                expanded_data["g_chosen"].append(float(g_values[higher_idx]))
-                expanded_data["g_reject"].append(float(g_values[lower_idx]))
-
-                expanded_data["j_star"].append(j_star)
-
-        dataset = Dataset.from_dict(expanded_data)
-        dataset = dataset.filter(lambda row: filter_same_responses(row))
-        print('filtered same responses:', len(dataset))
-        return dataset
+        streamed = Dataset.from_generator(row_generator, features=Features(features))
+        print('built dataset from generator!')
+        streamed = streamed.filter(lambda row: filter_same_responses(row))
+        print('filtered same responses:', len(streamed))
+        return streamed
 
     train_processed = process_split(ds_dict['train'], is_train=True)
     test_processed = process_split(ds_dict['test'], is_train=False)
