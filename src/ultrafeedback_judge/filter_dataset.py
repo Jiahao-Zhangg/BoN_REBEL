@@ -12,16 +12,20 @@ import random
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Filter dataset based on prompt length when applied to preference judging templates")
-    parser.add_argument("--input_repo", type=str, default="zjhhhh/Qwen2.5_3B_generation", help="Input dataset repository")
-    parser.add_argument("--n_sample", type=int, default=12000, help="Number of samples to randomly select")
+    parser.add_argument("--input_repo", type=str, default="zjhhhh/Qwen2.5_3B_generation_488_1", help="Input dataset repository")
+    parser.add_argument("--n_sample", type=int, default=72000, help="Number of samples to randomly select")
     parser.add_argument("--max_length", type=int, default=8192, help="Maximum allowed prompt length in tokens")
     parser.add_argument("--judge_model", type=str, default="Qwen/Qwen3-14B", help="Judge model for tokenization")
-    parser.add_argument("--selection_pairs", type=int, default=3, help="Number of selection responses")
+    parser.add_argument("--selection_pairs", type=int, default=4, help="Number of selection responses")
     parser.add_argument("--base_pairs", type=int, default=2, help="Number of base responses")
     parser.add_argument("--current_pairs", type=int, default=2, help="Number of current responses")
-    parser.add_argument("--output_repo", type=str, default="MisDrifter/filtered_dataset", help="Output dataset repository")
+    parser.add_argument("--adversary_pairs", type=int, default=2, help="Number of adversary responses")
+    parser.add_argument("--output_repo", type=str, default=None, help="Output dataset repository")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.output_repo is None:
+        args.output_repo = f"{args.input_repo}_filtered"
+    return args
 
 def load_prompt_templates():
     """Load all prompt templates used in the judging process."""
@@ -136,11 +140,12 @@ def calculate_prompt_length(tokenizer, template, row, response_a_col, response_b
         print(f"Error calculating length for {response_a_col} vs {response_b_col}: {e}")
         return float('inf')  # Return very large number to filter out problematic rows
 
-def filter_by_length(dataset, tokenizer, templates, max_length, selection_pairs, base_pairs, current_pairs):
+def filter_by_length(dataset, tokenizer, templates, max_length, selection_pairs, base_pairs, current_pairs, adversary_pairs):
     """Efficiently filter dataset at the prompt level using batched tokenization.
 
     A prompt row is kept if and only if, for all of its requirements, all
-    selection/base and current/base pairs format within the max_length.
+    selection/base, current/base, selection/adversary, and current/adversary pairs
+    (when the corresponding columns exist) format within the max_length.
     """
     # Use the 5score explanation template as it's the longest/most complex
     template = templates.get("preference_5score", templates.get("preference_binary", ""))
@@ -154,6 +159,7 @@ def filter_by_length(dataset, tokenizer, templates, max_length, selection_pairs,
     selection_responses = [f'selection_response_{i+1}' for i in range(selection_pairs)]
     base_responses = [f'base_response_{j+1}' for j in range(base_pairs)]
     current_responses = [f'current_response_{k+1}' for k in range(current_pairs)]
+    adversary_responses = [f'adversary_response_{t+1}' for t in range(adversary_pairs)]
     
     valid_indices = []  # indices into the original (non-expanded) dataset
     max_lengths = []    # track the max prompt length per kept prompt for stats
@@ -205,6 +211,48 @@ def filter_by_length(dataset, tokenizer, templates, max_length, selection_pairs,
                                 prompt=temp_row['prompt'],
                                 response_a=temp_row[current_col],
                                 response_b=temp_row[base_col],
+                                check=temp_row['check']
+                            )
+                            message = [{"role": "user", "content": formatted_prompt}]
+                            chat_formatted = tokenizer.apply_chat_template(
+                                message, tokenize=False, add_generation_prompt=True
+                            )
+                            all_formatted_prompts.append(chat_formatted)
+                            prompt_row_indices.append(idx)
+                            row_prompt_count[idx] += 1
+                        except Exception:
+                            continue
+
+            # selection vs adversary
+            for selection_col in selection_responses:
+                for adv_col in adversary_responses:
+                    if selection_col in temp_row and adv_col in temp_row:
+                        try:
+                            formatted_prompt = template.format(
+                                prompt=temp_row['prompt'],
+                                response_a=temp_row[selection_col],
+                                response_b=temp_row[adv_col],
+                                check=temp_row['check']
+                            )
+                            message = [{"role": "user", "content": formatted_prompt}]
+                            chat_formatted = tokenizer.apply_chat_template(
+                                message, tokenize=False, add_generation_prompt=True
+                            )
+                            all_formatted_prompts.append(chat_formatted)
+                            prompt_row_indices.append(idx)
+                            row_prompt_count[idx] += 1
+                        except Exception:
+                            continue
+
+            # current vs adversary
+            for current_col in current_responses:
+                for adv_col in adversary_responses:
+                    if current_col in temp_row and adv_col in temp_row:
+                        try:
+                            formatted_prompt = template.format(
+                                prompt=temp_row['prompt'],
+                                response_a=temp_row[current_col],
+                                response_b=temp_row[adv_col],
                                 check=temp_row['check']
                             )
                             message = [{"role": "user", "content": formatted_prompt}]
@@ -299,7 +347,7 @@ def main():
     print(f"Filtering by max length {args.max_length} tokens...")
     filtered_dataset, max_lengths = filter_by_length(
         dataset, tokenizer, templates, args.max_length,
-        args.selection_pairs, args.base_pairs, args.current_pairs
+        args.selection_pairs, args.base_pairs, args.current_pairs, args.adversary_pairs
     )
     
     # Output statistics
