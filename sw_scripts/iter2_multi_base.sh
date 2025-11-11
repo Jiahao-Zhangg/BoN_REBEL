@@ -1,6 +1,17 @@
 #!/bin/bash
+#SBATCH --job-name=iter2_multi_base
+#SBATCH --output=logs/iter2_multi_base_%A.out
+#SBATCH --error=logs/iter2_multi_base_%A.err
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=200G
+#SBATCH --partition=ml.p5.48xlarge
+#SBATCH --nodelist=ip-10-1-38-11
 
 set -euo pipefail
+
+mkdir -p logs
 
 # Hugging Face caches (match interactive environment)
 # export HF_HOME="/work2/jiahaoz4/.cache/huggingface"
@@ -19,6 +30,8 @@ BETA="1"
 TOTAL_EPISODES="47000"         # Episodes fed to rebel.py --total_episodes
 TEST_MODE="false"             # If true, pass --test to rebel.py for quick dataset sampling
 WORLD_SIZE="4"               # Number of GPUs/processes to use
+export CUDA_VISIBLE_DEVICES="0,1,2,3"
+echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 BON="true"                  # Toggle Best-of-N training behaviour for rebel.py
 SEED="555134"               # Random seed for reproducible runs
 JOB_RUN_ID="${JOB_RUN_ID:-$(date +%s)}"

@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=iter2_multi_adversary
-#SBATCH --output=logs/iter2_multi_adversary_%A.out
-#SBATCH --error=logs/iter2_multi_adversary_%A.err
+#SBATCH --job-name=iter2_fullcheck_multi_adversary
+#SBATCH --output=logs/iter2_fullcheck_multi_adversary_%A.out
+#SBATCH --error=logs/iter2_fullcheck_multi_adversary_%A.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=200G
 #SBATCH --partition=ml.p5.48xlarge
-#SBATCH --nodelist=ip-10-1-38-11
+#SBATCH --nodelist=ip-10-1-81-8
 
 set -euo pipefail
 
@@ -36,17 +36,17 @@ BON="true"                  # Toggle Best-of-N training behaviour for rebel.py
 SEED="555134"               # Random seed for reproducible runs
 JOB_RUN_ID="${JOB_RUN_ID:-$(date +%s)}"
 TMP_BASE="/fsx/gstevenw/testing_alignment_algos/BoN_REBEL/tmp"
-TMP_RUN_ROOT="${TMP_BASE%/}/iter2_multi_adversary_${USER}/${JOB_RUN_ID}"
+TMP_RUN_ROOT="${TMP_BASE%/}/iter2_fullcheck_multi_adversary_${USER}/${JOB_RUN_ID}"
 mkdir -p "$TMP_RUN_ROOT"
 
 # Optional explicit WandB run name; keep original prefix, append compact timestamp
 # If RUN_NAME is preset in the environment, it is used as-is.
 RUN_ID="${RUN_ID:-$(date +%y%m%d%H%M)}"
-RUN_NAME="${RUN_NAME:-iter2_multi_adversary_${RUN_ID}}"
+RUN_NAME="${RUN_NAME:-iter2_fullcheck_multi_adversary_${RUN_ID}}"
 
 LOG_DIR="${REBEL_LOG_DIR:-../logs}"
-LOG_OUT="${LOG_DIR%/}/iter2_multi_adversary.out"
-LOG_ERR="${LOG_DIR%/}/iter2_multi_adversary.err"
+LOG_OUT="${LOG_DIR%/}/iter2_fullcheck_multi_adversary.out"
+LOG_ERR="${LOG_DIR%/}/iter2_fullcheck_multi_adversary.err"
 mkdir -p "$LOG_DIR"
 
 # Mirror stdout/stderr to log files while keeping console output
@@ -55,15 +55,15 @@ exec 2> >(tee -a "$LOG_ERR" >&2)
 
 SECONDS=0
 OUTPUT_DIR="${TMP_RUN_ROOT}/outputs_seed_${SEED}_eta_${ETA}"
-HF_REPO_NAME="zjhhhh/iter2_multi_adversary"
+HF_REPO_NAME="zjhhhh/iter2_fullcheck_multi_adversary"
 
 ############################
 # Training configuration   #
 ############################
 GRADIENT_ACCUMULATION_STEPS=$((128 / WORLD_SIZE))
-TRAIN_INPUT_REPO="zjhhhh/iter2_multi_adversary_mean_beta_1.0_multi_expand_tokenized_gap_ratio_0.22"
+TRAIN_INPUT_REPO="zjhhhh/iter2_fullcheck_multi_adversary_beta_1.0_multi_expand_tokenized_gap_ratio_0.22"
 # Base model used to initialize training
-BASE_MODEL="zjhhhh/qwen2.5_3B_Instruct_multi_gap_seed_555134_beta_1_eta_1e4_step_382_final"
+BASE_MODEL="zjhhhh/fullcheck_multi_beta_1.0_step_382_final"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -84,7 +84,7 @@ set -u
 TRAIN_CMD=(
     python -m accelerate.commands.launch
     --config_file accelerate_cfgs/deepspeed_config_stage_3.yaml
-    --main-process-port 29080
+    --main-process-port 29082
     --num_processes "$WORLD_SIZE"
     src/ultrafeedback_judge/rebel_save.py
     --output_dir "$OUTPUT_DIR"
