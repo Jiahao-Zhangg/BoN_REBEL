@@ -126,21 +126,40 @@ def main():
             raise ValueError("Dataset is missing response columns required for downstream tokenization.")
 
         escaped_score_type = re.escape(args.score_type)
-        # Detect whether score columns use 'base' or 'adversary'
-        detected_key = None
+        # Detect whether score columns consistently use 'base' or 'adversary'.
+        # We require both selection_*_<key>_* and current_*_<key>_* to exist for the SAME key.
+        counts = {}
+        sel_present_keys = set()
+        cur_present_keys = set()
         for candidate in ("base", "adversary"):
-            sel_pat = re.compile(rf"^selection_(\\d+)_{candidate}_(\\d+)_({escaped_score_type})$")
-            cur_pat = re.compile(rf"^current_(\\d+)_{candidate}_(\\d+)_({escaped_score_type})$")
-            sel_hits = any(sel_pat.match(n) for n in dataset.column_names)
-            cur_hits = any(cur_pat.match(n) for n in dataset.column_names)
-            if sel_hits and cur_hits:
-                detected_key = candidate
-                break
-        if detected_key is None:
-            raise ValueError("Could not find score columns using either 'base' or 'adversary'.")
+            sel_pat = re.compile(rf"^selection_(\d+)_{candidate}_(\d+)_({escaped_score_type})$")
+            cur_pat = re.compile(rf"^current_(\d+)_{candidate}_(\d+)_({escaped_score_type})$")
+            sel_count = sum(1 for n in dataset.column_names if sel_pat.match(n))
+            cur_count = sum(1 for n in dataset.column_names if cur_pat.match(n))
+            counts[candidate] = (sel_count, cur_count)
+            if sel_count > 0:
+                sel_present_keys.add(candidate)
+            if cur_count > 0:
+                cur_present_keys.add(candidate)
 
-        selection_score_pattern = re.compile(rf"^selection_(\\d+)_{detected_key}_(\\d+)_({escaped_score_type})$")
-        current_score_pattern = re.compile(rf"^current_(\\d+)_{detected_key}_(\\d+)_({escaped_score_type})$")
+        valid_keys = sel_present_keys & cur_present_keys
+        if len(valid_keys) == 1:
+            detected_key = next(iter(valid_keys))
+        elif len(valid_keys) > 1:
+            raise ValueError(
+                "Both 'base' and 'adversary' score families are present; please keep only one naming scheme. "
+                f"Counts: base sel={counts.get('base',(0,0))[0]}, cur={counts.get('base',(0,0))[1]}; "
+                f"adversary sel={counts.get('adversary',(0,0))[0]}, cur={counts.get('adversary',(0,0))[1]}."
+            )
+        else:
+            raise ValueError(
+                "Could not find matching selection/current score columns for the same key. "
+                f"Observed counts — base: sel={counts.get('base',(0,0))[0]}, cur={counts.get('base',(0,0))[1]}; "
+                f"adversary: sel={counts.get('adversary',(0,0))[0]}, cur={counts.get('adversary',(0,0))[1]}."
+            )
+
+        selection_score_pattern = re.compile(rf"^selection_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
+        current_score_pattern = re.compile(rf"^current_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
         selection_ids = set()
         current_ids = set()
         base_ids = set()
@@ -158,9 +177,9 @@ def main():
         current_ids = sorted(current_ids)
         base_ids = sorted(base_ids)
         if not selection_ids:
-            raise ValueError("Dataset is missing selection-base score columns for the specified score type.")
+            raise ValueError("Dataset is missing selection score columns for the specified score type.")
         if not current_ids:
-            raise ValueError("Dataset is missing current-base score columns for the specified score type.")
+            raise ValueError("Dataset is missing current score columns for the specified score type.")
         if not base_ids:
             raise ValueError("Dataset is missing base indices for the specified score type.")
 

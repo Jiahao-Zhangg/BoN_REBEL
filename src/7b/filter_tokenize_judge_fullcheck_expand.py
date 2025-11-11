@@ -119,14 +119,47 @@ def main():
             if c not in dataset.column_names:
                 raise ValueError(f"Expected preprocessed dataset to contain column '{c}'. Please run preprocess_common.py first.")
 
-        response_pattern = re.compile(r'^(selection|current|base)_response_\d+$')
+        # Allow datasets that use either 'base' or 'adversary' terminology
+        response_pattern = re.compile(r'^(selection|current|base|adversary)_response_\d+$')
         response_columns = sorted([name for name in dataset.column_names if response_pattern.match(name)])
         if not response_columns:
             raise ValueError("Dataset is missing response columns required for downstream tokenization.")
 
         escaped_score_type = re.escape(args.score_type)
-        selection_score_pattern = re.compile(rf"^selection_(\d+)_base_(\d+)_({escaped_score_type})$")
-        current_score_pattern = re.compile(rf"^current_(\d+)_base_(\d+)_({escaped_score_type})$")
+        # Detect whether score columns consistently use 'base' or 'adversary'.
+        # We require both selection_*_<key>_* and current_*_<key>_* to exist for the SAME key.
+        counts = {}
+        sel_present_keys = set()
+        cur_present_keys = set()
+        for candidate in ("base", "adversary"):
+            sel_pat = re.compile(rf"^selection_(\d+)_{candidate}_(\d+)_({escaped_score_type})$")
+            cur_pat = re.compile(rf"^current_(\d+)_{candidate}_(\d+)_({escaped_score_type})$")
+            sel_count = sum(1 for n in dataset.column_names if sel_pat.match(n))
+            cur_count = sum(1 for n in dataset.column_names if cur_pat.match(n))
+            counts[candidate] = (sel_count, cur_count)
+            if sel_count > 0:
+                sel_present_keys.add(candidate)
+            if cur_count > 0:
+                cur_present_keys.add(candidate)
+
+        valid_keys = sel_present_keys & cur_present_keys
+        if len(valid_keys) == 1:
+            detected_key = next(iter(valid_keys))
+        elif len(valid_keys) > 1:
+            raise ValueError(
+                "Both 'base' and 'adversary' score families are present; please keep only one naming scheme. "
+                f"Counts: base sel={counts.get('base',(0,0))[0]}, cur={counts.get('base',(0,0))[1]}; "
+                f"adversary sel={counts.get('adversary',(0,0))[0]}, cur={counts.get('adversary',(0,0))[1]}."
+            )
+        else:
+            raise ValueError(
+                "Could not find matching selection/current score columns for the same key. "
+                f"Observed counts — base: sel={counts.get('base',(0,0))[0]}, cur={counts.get('base',(0,0))[1]}; "
+                f"adversary: sel={counts.get('adversary',(0,0))[0]}, cur={counts.get('adversary',(0,0))[1]}."
+            )
+
+        selection_score_pattern = re.compile(rf"^selection_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
+        current_score_pattern = re.compile(rf"^current_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
         selection_ids = set()
         current_ids = set()
         base_ids = set()
@@ -144,9 +177,9 @@ def main():
         current_ids = sorted(current_ids)
         base_ids = sorted(base_ids)
         if not selection_ids:
-            raise ValueError("Dataset is missing selection-base score columns for the specified score type.")
+            raise ValueError("Dataset is missing selection score columns for the specified score type.")
         if not current_ids:
-            raise ValueError("Dataset is missing current-base score columns for the specified score type.")
+            raise ValueError("Dataset is missing current score columns for the specified score type.")
         if not base_ids:
             raise ValueError("Dataset is missing base indices for the specified score type.")
 
@@ -154,12 +187,12 @@ def main():
         def row_generator():
             for row in tqdm(dataset):
                 beta = args.beta
-                # Compute base weights from current-base scores
+                # Compute base weights from current-<detected_key> scores
                 weights_by_base = {}
                 for base_id in base_ids:
                     cur_vals = []
                     for cur_id in current_ids:
-                        key = f"current_{cur_id}_base_{base_id}_{args.score_type}"
+                        key = f"current_{cur_id}_{detected_key}_{base_id}_{args.score_type}"
                         raw_scores = row.get(key, None)
                         if raw_scores is None:
                             continue
@@ -185,7 +218,7 @@ def main():
                         weight = weights_by_base.get(base_id)
                         if weight is None:
                             continue
-                        key = f"selection_{sel_id}_base_{base_id}_{args.score_type}"
+                        key = f"selection_{sel_id}_{detected_key}_{base_id}_{args.score_type}"
                         raw_scores = row.get(key, None)
                         if raw_scores is None:
                             continue
