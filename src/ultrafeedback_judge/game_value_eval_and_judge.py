@@ -51,6 +51,7 @@ def parse_arguments():
     parser.add_argument("--judge_top_k", type=int, default=20)
     parser.add_argument("--judge_max_tokens", type=int, default=256)
     parser.add_argument("--switch_position", action="store_true", default=False)
+    parser.add_argument("--full_check", action="store_true", default=False)
 
     # Scoring
     parser.add_argument("--beta", type=float, default=1.0)
@@ -129,8 +130,9 @@ def add_static_response_columns(dataset, rows: List[dict], prompt_to_idx: Dict[s
     return dataset
 
 
-def load_preference_5score_template() -> str:
-    template_path = Path(__file__).parent / "prompt_preference_5score.txt"
+def load_preference_5score_template(full_check: bool = False) -> str:
+    filename = "prompt_preference_5score_fullchecks.txt" if full_check else "prompt_preference_5score_explanation.txt"
+    template_path = Path(__file__).parent / filename
     with open(template_path, 'r') as f:
         return f.read()
 
@@ -355,19 +357,46 @@ def main():
     except Exception:
         base_ds = load_dataset(args.base_repo, split='train')
 
-    # Expand to (prompt, check) rows to mirror game_value_evaluate_local_v2
-    expanded = split_requirements_to_checks(base_ds)
-    expanded_rows = [row for row in expanded]
-
-    # Prepare unique prompts and mappings
-    unique_prompts: List[str] = list(dict.fromkeys([row["prompt"] for row in expanded_rows]))
-    # Apply start/end slicing first
-    if args.start_idx is not None or args.end_idx is not None:
-        s = 0 if args.start_idx is None else max(0, int(args.start_idx))
-        e = None if args.end_idx is None else int(args.end_idx)
-        unique_prompts = unique_prompts[s:e]
-        expanded = Dataset.from_list([row for row in expanded_rows if row["prompt"] in set(unique_prompts)])
+    # Expand to rows for judging
+    if args.full_check:
+        # Do NOT split the requirements. Keep one row per unique prompt and
+        # pass the full requirements into the scoring template as a single check.
+        all_prompts = [base_ds[i]["prompt"] for i in range(len(base_ds))]
+        unique_prompts: List[str] = list(dict.fromkeys(all_prompts))
+        # Apply start/end slicing first
+        if args.start_idx is not None or args.end_idx is not None:
+            s = 0 if args.start_idx is None else max(0, int(args.start_idx))
+            e = None if args.end_idx is None else int(args.end_idx)
+            unique_prompts = unique_prompts[s:e]
+        # Map prompt -> first index to retrieve requirements text
+        base_prompt_to_first_idx: Dict[str, int] = {}
+        for i in range(len(base_ds)):
+            p = base_ds[i]["prompt"]
+            if p not in base_prompt_to_first_idx:
+                base_prompt_to_first_idx[p] = i
+        expanded_rows = []
+        for p in unique_prompts:
+            bi = base_prompt_to_first_idx[p]
+            requirements_text = base_ds[bi].get("requirements", "")
+            expanded_rows.append({
+                "prompt": p,
+                "requirements": requirements_text,
+                "check": requirements_text,
+            })
+        expanded = Dataset.from_list(expanded_rows)
+    else:
+        # Split the requirements into multiple checks; one row per check
+        expanded = split_requirements_to_checks(base_ds)
         expanded_rows = [row for row in expanded]
+        # Prepare unique prompts and mappings
+        unique_prompts: List[str] = list(dict.fromkeys([row["prompt"] for row in expanded_rows]))
+        # Apply start/end slicing first
+        if args.start_idx is not None or args.end_idx is not None:
+            s = 0 if args.start_idx is None else max(0, int(args.start_idx))
+            e = None if args.end_idx is None else int(args.end_idx)
+            unique_prompts = unique_prompts[s:e]
+            expanded = Dataset.from_list([row for row in expanded_rows if row["prompt"] in set(unique_prompts)])
+            expanded_rows = [row for row in expanded]
     prompt_to_idx: Dict[str, int] = {p: i for i, p in enumerate(unique_prompts)}
 
     # Extract base responses matrix [num_prompts][n_base]
@@ -382,7 +411,7 @@ def main():
         bi = base_prompt_to_idx[p]
         base_resps.append([base_ds[bi][f"base_response_{j}"] for j in range(n_base)])
 
-    template = load_preference_5score_template()
+    template = load_preference_5score_template(args.full_check)
 
     scores_accumulator: List[float] = []
 
