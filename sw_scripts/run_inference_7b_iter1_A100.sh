@@ -48,7 +48,7 @@ if [ "$SLURMD_NODENAME" != "$ASSIGNED_NODE" ]; then
 fi
 
 # Define paths
-SCRIPT_PATH="src/checklist_judge_data_parallel/run_inference_on_shard_robust_fullchecks.py"
+SCRIPT_PATH="src/checklist_judge_data_parallel/run_inference_on_shard_iter1_robust.py"
 SHARD_DIR="./7b_iter1_shards"
 OUTPUT_DIR="./inference_scores_7b_iter1"
 JUDGE_MODEL="Qwen/Qwen3-14B"
@@ -97,7 +97,7 @@ run_inference() {
             --current_pairs 2 \
             --switch_position \
             --push_to_hub \
-            --hf_repo_template zjhhhh/7b_iter1_scores_{target}_{shard_idx} \
+            --hf_repo_template zjhhhh/7b_iter1_scores_{shard_idx} \
             --output_dir $OUTPUT_DIR
     ) > $shard_log_out 2> $shard_log_err &
 
