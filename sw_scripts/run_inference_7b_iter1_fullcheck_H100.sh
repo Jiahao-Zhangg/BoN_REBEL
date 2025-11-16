@@ -3,9 +3,9 @@
 # Each job runs 8 Python scripts on different single GPUs (0,1,2,3,4,5,6,7)
 # Shards 0-47 (48 total shards)
 # Usage: sbatch run_inference_fullcheck_H100.sh
-#SBATCH --job-name=inference_fullcheck_H100
-#SBATCH --output=logs/inference_fullcheck_H100_%A_%a.out
-#SBATCH --error=logs/inference_fullcheck_H100_%A_%a.err
+#SBATCH --job-name=inference_7b_iter1_fullcheck_H100
+#SBATCH --output=logs/inference_7b_iter1_fullcheck_H100_%A_%a.out
+#SBATCH --error=logs/inference_7b_iter1_fullcheck_H100_%A_%a.err
 #SBATCH --array=0-5%2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -98,7 +98,7 @@ run_inference() {
             --current_pairs 2 \
             --switch_position \
             --push_to_hub \
-            --hf_repo_template zjhhhh/fullcheck_scores_{target}_{shard_idx} \
+            --hf_repo_template zjhhhh/7b_iter1_fullcheck_{shard_idx} \
             --output_dir $OUTPUT_DIR
     ) > $shard_log_out 2> $shard_log_err &
 

@@ -3,9 +3,9 @@
 # Each job runs 8 Python scripts on different single GPUs (0,1,2,3,4,5,6,7)
 # Shards 48-71 (24 total shards)
 # Usage: sbatch run_inference_fullcheck_A100.sh
-#SBATCH --job-name=inference_fullcheck_A100
-#SBATCH --output=logs/inference_fullcheck_A100_%A_%a.out
-#SBATCH --error=logs/inference_fullcheck_A100_%A_%a.err
+#SBATCH --job-name=inference_7b_iter1_fullcheck_A100
+#SBATCH --output=logs/inference_7b_iter1_fullcheck_A100_%A_%a.out
+#SBATCH --error=logs/inference_7b_iter1_fullcheck_A100_%A_%a.err
 #SBATCH --array=0-2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
