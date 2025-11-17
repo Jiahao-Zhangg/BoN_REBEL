@@ -8,6 +8,7 @@
 #SBATCH --mem=200G
 #SBATCH --partition=ml.p5.48xlarge
 #SBATCH --nodelist=ip-10-1-38-11
+#SBATCH --exclusive
 
 set -euo pipefail
 
@@ -29,8 +30,8 @@ ETA="1e6"                     # REBEL eta parameter
 BETA="1"
 TOTAL_EPISODES="56000"         # Episodes fed to rebel.py --total_episodes
 TEST_MODE="false"             # If true, pass --test to rebel.py for quick dataset sampling
-WORLD_SIZE="4"               # Number of GPUs/processes to use
-export CUDA_VISIBLE_DEVICES="0,1,2,3"
+WORLD_SIZE="8"               # Number of GPUs/processes to use
+export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 BON="true"                  # Toggle Best-of-N training behaviour for rebel.py
 SEED="555134"               # Random seed for reproducible runs
