@@ -308,6 +308,11 @@ if __name__ == '__main__':
                     attn_implementation="flash_attention_2",
                 )
     disable_dropout_in_model(policy)
+    # Enable gradient checkpointing to reduce activation memory
+    if hasattr(policy, "gradient_checkpointing_enable"):
+        if hasattr(policy, "config"):
+            policy.config.use_cache = False
+        policy.gradient_checkpointing_enable()
 
     base_columns = [
         "qwen_prompt_tokens", "qwen_chosen_tokens", "chosen_reward",
