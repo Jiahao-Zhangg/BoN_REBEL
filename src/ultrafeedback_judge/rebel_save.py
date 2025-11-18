@@ -411,7 +411,7 @@ if __name__ == '__main__':
                 os.makedirs(os.path.dirname(output_dir), exist_ok=True)
                 accelerator.save_state(output_dir=output_dir)
                 accelerator.wait_for_everyone()
-            # torch.cuda.empty_cache()
+            deepspeed.accelerator.get_accelerator().empty_cache()
 
         # training
         data = next(iter_dataloader)
@@ -531,7 +531,7 @@ if __name__ == '__main__':
             eps = int(global_step / (time.time() - start_time))
             writer.add_scalar("rebel/eps", eps, update)
             accelerator.print("rebel/eps", eps, update)
-            # torch.cuda.empty_cache()
+            deepspeed.accelerator.get_accelerator().empty_cache()
 
     # save model
     eval_dict = evaluate(args, accelerator.unwrap_model(policy), tokenizer, validation_dataloader)
@@ -543,4 +543,4 @@ if __name__ == '__main__':
         os.makedirs(os.path.dirname(output_dir), exist_ok=True)
         accelerator.save_state(output_dir=output_dir)
         accelerator.wait_for_everyone()
-    # torch.cuda.empty_cache()
+    deepspeed.accelerator.get_accelerator().empty_cache()
