@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=200G
 #SBATCH --partition=ml.p5.48xlarge
-#SBATCH --nodelist=ip-10-1-81-8
+#SBATCH --nodelist=ip-10-1-38-11
 #SBATCH --exclusive
 
 set -euo pipefail
@@ -56,13 +56,13 @@ exec 2> >(tee -a "$LOG_ERR" >&2)
 
 SECONDS=0
 OUTPUT_DIR="${TMP_RUN_ROOT}/outputs_seed_${SEED}_eta_${ETA}"
-HF_REPO_NAME="zjhhhh/7b_min_iter1_eta_1e4"
+HF_REPO_NAME="zjhhhh/7b_min_iter1_eta_${ETA}"
 
 ############################
 # Training configuration   #
 ############################
 GRADIENT_ACCUMULATION_STEPS=$((128 / WORLD_SIZE))
-TRAIN_INPUT_REPO="TBD"
+TRAIN_INPUT_REPO="zjhhhh/7b_iter1_min_expand_ver2_tokenized_gap_ratio_0.22"
 # Base model used to initialize training
 BASE_MODEL="Qwen/Qwen2.5-7B-Instruct"
 
