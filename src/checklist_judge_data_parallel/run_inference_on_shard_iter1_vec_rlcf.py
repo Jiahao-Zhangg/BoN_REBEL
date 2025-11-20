@@ -18,7 +18,7 @@ from vllm.sampling_params import GuidedDecodingParams
 # ------------------ Structured outputs for guided decoding ------------------
 class Preference101ScoreOutput(BaseModel):
     explanation: str
-    verdict: int = Field(ge=-1, le=101)
+    verdict: int = Field(ge=-1, le=100)
  
  
 PREFERENCE_BASELINE_GUIDED_DECODING = GuidedDecodingParams(
@@ -361,7 +361,7 @@ def main():
                     orig_mean.append(None)
                 else:
                     orig_mean.append(float(np.mean(ints_no_missing)))
-                score_range = (0, 101)
+                score_range = (0, 100)
                 orig_majority.append(get_numeric_mode(vals, score_range))
         reduced_mean = orig_mean
         reduced_majority = orig_majority
