@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=200G
 #SBATCH --partition=ml.p5.48xlarge
-#SBATCH --nodelist=ip-10-1-81-8
+#SBATCH --nodelist=ip-10-1-38-11
 #SBATCH --exclusive
 
 set -euo pipefail
