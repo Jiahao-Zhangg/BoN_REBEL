@@ -12,7 +12,7 @@ Accordingly, score the response with a rating (a number between 0 and 100) asses
 - 0: Opt for 0 if the generated text fails to meet the question’s requirements or provides no information that could be utilized to answer the question. If the response contains a critical error relevant to the question, return a 0. For the question about the vegan substitute, an example 0-point response is "Mushrooms, because they make you question why you ever thought a dead animal could compare to this vegan delight." While funny and engaging, this response contains zero factual detail about mushrooms, critically violating the question.
 
 Your score can be any number between 0 and 100 (not just the ones listed above). If you are totally confused, return -1 as a default. You should use your judgment to determine the most appropriate score. Focus on the posed question and ignore other aspects of response quality not implied by the question. Return only a number - do not include any other text in your response.
-First provide a short 1-2 explanation of your choice and why you made it. Then provide your verdict as a single number in {{0,1,2,3,4}}. Use the format: `{{"explanation":"...", "verdict":"..."}}`
+First provide a short 1-2 explanation of your choice and why you made it. Then provide your verdict as a single number between 0 and 100 (not just the ones listed above). Use the format: `{{"explanation":"...", "verdict":"..."}}`
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
