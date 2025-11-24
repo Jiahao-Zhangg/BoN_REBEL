@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=fullcheck_multi_generate_iter2_node1
-#SBATCH --output=logs/fullcheck_multi_generate_iter2_node1_%j.out
-#SBATCH --error=logs/fullcheck_multi_generate_iter2_node1_%j.err
+#SBATCH --job-name=7b_multi_generate_iter2_node1
+#SBATCH --output=logs/7b_multi_generate_iter2_node1_%j.out
+#SBATCH --error=logs/7b_multi_generate_iter2_node1_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=48
 #SBATCH --mem=0

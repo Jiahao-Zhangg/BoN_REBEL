@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=multi_generate_iter2_node2
-#SBATCH --output=logs/multi_generate_iter2_node2_%j.out
-#SBATCH --error=logs/multi_generate_iter2_node2_%j.err
+#SBATCH --job-name=7b_multi_generate_iter2_node2
+#SBATCH --output=logs/7b_multi_generate_iter2_node2_%j.out
+#SBATCH --error=logs/7b_multi_generate_iter2_node2_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=48
 #SBATCH --mem=0
@@ -24,8 +24,8 @@ GPUS_PER_JOB="1"
 START_IDX="16000"
 CHUNK_SIZE="2000"
 NUM_JOBS="8"
-MODEL="zjhhhh/qwen2.5_3B_Instruct_multi_gap_seed_555134_beta_1_eta_1e4_step_382_final"
-OUTPUT_PREFIX="Qwen3b_iter1_multi_"
+MODEL="zjhhhh/7b_sweep_eta_1e4_step_401"
+OUTPUT_PREFIX="Qwen7b_iter1_multi_"
 GPU_MEM_UTIL="0.8"
 EXTRA_ARGS=""
 GPU_LIST="0,1,2,3,4,5,6,7"
