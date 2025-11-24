@@ -2,10 +2,10 @@
 # SLURM script to run inference across 48 shards using 6 jobs on H100
 # Each job runs 8 Python scripts on different single GPUs (0,1,2,3,4,5,6,7)
 # Shards 0-47 (48 total shards)
-# Usage: sbatch run_inference_iter2_multi_H100.sh
-#SBATCH --job-name=inference_multi_gpu_iter2_multi_H100
-#SBATCH --output=logs/inference_iter2_multi_H100_%A_%a.out
-#SBATCH --error=logs/inference_iter2_multi_H100_%A_%a.err
+# Usage: sbatch run_inference_iter2_7b_multi_H100.sh
+#SBATCH --job-name=inference_multi_gpu_iter2_7b_multi_H100
+#SBATCH --output=logs/inference_iter2_7b_multi_H100_%A_%a.out
+#SBATCH --error=logs/inference_iter2_7b_multi_H100_%A_%a.err
 #SBATCH --array=0-5%2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -43,8 +43,8 @@ if [ "$SLURMD_NODENAME" != "$ASSIGNED_NODE" ]; then
 fi
 # Define paths
 SCRIPT_PATH="src/checklist_judge_data_parallel/run_inference_on_shard_iter2_robust.py"
-SHARD_DIR="./iter2_multi_shards"
-OUTPUT_DIR="./inference_scores_iter2_multi"
+SHARD_DIR="./iter2_7b_multi_shards"
+OUTPUT_DIR="./inference_scores_iter2_7b_multi"
 JUDGE_MODEL="Qwen/Qwen3-14B"
 # Calculate shard indices for this job (8 shards per job)
 BASE_SHARD=$((SLURM_ARRAY_TASK_ID * 8))
@@ -85,7 +85,7 @@ run_inference() {
             --adversary_pairs 2 \
             --switch_position \
             --push_to_hub \
-            --hf_repo_template zjhhhh/iter2_multi_scores_{target}_{shard_idx} \
+            --hf_repo_template zjhhhh/iter2_7b_multi_scores_{target}_{shard_idx} \
             --output_dir $OUTPUT_DIR
     ) > $shard_log_out 2> $shard_log_err &
     echo "Launched inference for shard $shard_idx on GPU $gpu (PID: $!)"
