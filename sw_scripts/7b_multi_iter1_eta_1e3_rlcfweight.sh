@@ -62,7 +62,7 @@ HF_REPO_NAME="zjhhhh/7b_multi_iter1_eta_${ETA}_rlcfweight"
 # Training configuration   #
 ############################
 GRADIENT_ACCUMULATION_STEPS=$((128 / WORLD_SIZE))
-TRAIN_INPUT_REPO="zjhhhh/7b_iter1_preprocessed_min_expand_rlcfweights_tokenized_gap_ratio_0.22"
+TRAIN_INPUT_REPO="zjhhhh/7b_rlcfweights_multi_iter1_mean_beta_1.0_multi_expand_tokenized_gap_ratio_0.22"
 # Base model used to initialize training
 BASE_MODEL="Qwen/Qwen2.5-7B-Instruct"
 
