@@ -85,7 +85,7 @@ set -u
 TRAIN_CMD=(
     python -m accelerate.commands.launch
     --config_file accelerate_cfgs/deepspeed_config_stage_3.yaml
-    --main-process-port 29080
+    --main-process-port 29083
     --num_processes "$WORLD_SIZE"
     src/ultrafeedback_judge/rebel_save.py
     --output_dir "$OUTPUT_DIR"
