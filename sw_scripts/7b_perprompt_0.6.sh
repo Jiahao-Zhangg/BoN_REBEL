@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=7b_perprompt_0.5
-#SBATCH --output=logs/7b_perprompt_0.5_%A.out
-#SBATCH --error=logs/7b_perprompt_0.5_%A.err
+#SBATCH --job-name=7b_perprompt_0.6
+#SBATCH --output=logs/7b_perprompt_0.6_%A.out
+#SBATCH --error=logs/7b_perprompt_0.6_%A.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
@@ -28,7 +28,7 @@ source /fsx/gstevenw/miniconda3/etc/profile.d/conda.sh
 # Configuration variables (modify as needed)
 ETA="1e4"                     # REBEL eta parameter
 BETA="1"
-TOTAL_EPISODES="56000"         # Episodes fed to rebel.py --total_episodes
+TOTAL_EPISODES="25600"         # Episodes fed to rebel.py --total_episodes
 TEST_MODE="false"             # If true, pass --test to rebel.py for quick dataset sampling
 WORLD_SIZE="8"               # Number of GPUs/processes to use
 export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
@@ -37,17 +37,17 @@ BON="true"                  # Toggle Best-of-N training behaviour for rebel.py
 SEED="555134"               # Random seed for reproducible runs
 JOB_RUN_ID="${JOB_RUN_ID:-$(date +%s)}"
 TMP_BASE="/fsx/gstevenw/testing_alignment_algos/BoN_REBEL/tmp"
-TMP_RUN_ROOT="${TMP_BASE%/}/7b_perprompt_0.5_${USER}/${JOB_RUN_ID}"
+TMP_RUN_ROOT="${TMP_BASE%/}/7b_perprompt_0.6_${USER}/${JOB_RUN_ID}"
 mkdir -p "$TMP_RUN_ROOT"
 
 # Optional explicit WandB run name; keep original prefix, append compact timestamp
 # If RUN_NAME is preset in the environment, it is used as-is.
 RUN_ID="${RUN_ID:-$(date +%y%m%d%H%M)}"
-RUN_NAME="${RUN_NAME:-7b_perprompt_0.5_${RUN_ID}}"
+RUN_NAME="${RUN_NAME:-7b_perprompt_0.6_${RUN_ID}}"
 
 LOG_DIR="${REBEL_LOG_DIR:-../logs}"
-LOG_OUT="${LOG_DIR%/}/7b_perprompt_0.5.out"
-LOG_ERR="${LOG_DIR%/}/7b_perprompt_0.5.err"
+LOG_OUT="${LOG_DIR%/}/7b_perprompt_0.6.out"
+LOG_ERR="${LOG_DIR%/}/7b_perprompt_0.6.err"
 mkdir -p "$LOG_DIR"
 
 # Mirror stdout/stderr to log files while keeping console output
@@ -56,13 +56,13 @@ exec 2> >(tee -a "$LOG_ERR" >&2)
 
 SECONDS=0
 OUTPUT_DIR="${TMP_RUN_ROOT}/outputs_seed_${SEED}_eta_${ETA}"
-HF_REPO_NAME="zjhhhh/7b_perprompt_0.5"
+HF_REPO_NAME="zjhhhh/7b_perprompt_0.6"
 
 ############################
 # Training configuration   #
 ############################
 GRADIENT_ACCUMULATION_STEPS=$((128 / WORLD_SIZE))
-TRAIN_INPUT_REPO="zjhhhh/7b_iter1_preprocessed_mean_beta_1.0_multi_noexpand_tokenized_gap_ratio_0.5"
+TRAIN_INPUT_REPO="zjhhhh/7b_iter1_preprocessed_mean_beta_1.0_multi_noexpand_tokenized_gap_ratio_0.6"
 # Base model used to initialize training
 BASE_MODEL="Qwen/Qwen2.5-7B-Instruct"
 
