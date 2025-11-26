@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=7b_min_iter2_generate
-#SBATCH --output=logs/7b_min_iter2_generate_%A_%a.out
-#SBATCH --error=logs/7b_min_iter2_generate_%A_%a.err
+#SBATCH --job-name=7b_min_gap_0.17_iter2_generate
+#SBATCH --output=logs/7b_min_gap_0.17_iter2_generate_%A_%a.out
+#SBATCH --error=logs/7b_min_gap_0.17_iter2_generate_%A_%a.err
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=48
