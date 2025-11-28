@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Common configuration (override via environment variables)
-MODEL=${MODEL:-"zjhhhh/7b_gap_0.17_step_301"}
+MODEL=${MODEL:-"Qwen/Qwen2.5-7B-Instruct"}
 RAW_REPO=${RAW_REPO:-"zjhhhh/iter2_7b_min_gap_0.17_scores_adversary"}
 # NOCHECK_REPO=${NOCHECK_REPO:-"zjhhhh/whole_sw_maxlen_8192_nocheck_rescale"}
 # OUTPUT_PREFIX=${OUTPUT_PREFIX:-"zjhhhh/iter2_adversary"}
