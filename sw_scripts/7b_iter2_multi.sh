@@ -56,7 +56,7 @@ exec 2> >(tee -a "$LOG_ERR" >&2)
 
 SECONDS=0
 OUTPUT_DIR="${TMP_RUN_ROOT}/outputs_seed_${SEED}_eta_${ETA}"
-HF_REPO_NAME="zjhhhh/7b_iter2_minmin"
+HF_REPO_NAME="zjhhhh/7b_iter2_multi"
 
 ############################
 # Training configuration   #
