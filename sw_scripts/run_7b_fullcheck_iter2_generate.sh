@@ -11,7 +11,7 @@
 #SBATCH --exclusive
 #SBATCH --array=0-3
 # Optional: restrict scheduling to the original four nodes (any of them)
-#SBATCH --nodelist=ip-10-1-231-85, ip-10-1-235-38, ip-10-1-242-194, ip-10-1-248-29
+#SBATCH --nodelist=ip-10-1-231-85,ip-10-1-235-38,ip-10-1-242-194,ip-10-1-248-29
 
 
 # Array task mapping:
@@ -47,7 +47,7 @@ fi
 TOTAL_GPUS="8"
 GPUS_PER_JOB="1"
 CHUNK_SIZE="2000"
-MODEL="zjhhhh/7b_fullcheck_0.17_step_350_final"
+MODEL="zjhhhh/7b_fullcheck_0.17_iter1_step_350_final"
 OUTPUT_PREFIX="Qwen7b_fullcheck_0.17_iter1_"
 GPU_MEM_UTIL="0.8"
 EXTRA_ARGS=""
