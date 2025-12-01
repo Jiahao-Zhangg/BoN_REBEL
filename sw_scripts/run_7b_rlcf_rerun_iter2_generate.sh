@@ -137,7 +137,7 @@ launch_job() {
 
   echo "[task $TASK_ID job $job_id] GPUs={$cuda_visible} range=[$s_idx,$e_idx)" >&2
   CUDA_VISIBLE_DEVICES="$cuda_visible" \
-  python ../src/ultrafeedback_multi_preference/generate.py \
+  python src/ultrafeedback_multi_preference/generate.py \
     --output_repo "${OUTPUT_PREFIX}${s_idx}" \
     --model "$MODEL" \
     --start_idx "$s_idx" \
