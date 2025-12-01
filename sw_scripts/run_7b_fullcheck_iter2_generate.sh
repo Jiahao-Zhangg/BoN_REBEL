@@ -11,7 +11,7 @@
 #SBATCH --exclusive
 #SBATCH --array=0-3
 # Optional: restrict scheduling to the original four nodes (any of them)
-#SBATCH --nodelist=ip-10-1-173-179,ip-10-1-184-205,ip-10-1-196-96,ip-10-1-226-48
+#SBATCH --nodelist=ip-10-1-231-85, ip-10-1-235-38, ip-10-1-242-194, ip-10-1-248-29
 
 
 # Array task mapping:
