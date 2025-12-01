@@ -47,7 +47,7 @@ fi
 TOTAL_GPUS="8"
 GPUS_PER_JOB="1"
 CHUNK_SIZE="2000"
-MODEL="zjhhhh/7b_fullcheck_0.17_iter1_step_350_final"
+MODEL="zjhhhh/7b_fullcheck_gap_0.17_iter1_step_350_final"
 OUTPUT_PREFIX="Qwen7b_fullcheck_0.17_iter1_"
 GPU_MEM_UTIL="0.8"
 EXTRA_ARGS=""
