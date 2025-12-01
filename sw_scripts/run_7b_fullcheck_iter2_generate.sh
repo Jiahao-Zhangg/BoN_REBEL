@@ -34,7 +34,7 @@ NUM_JOBS_LIST=(8 8 8 2)
 JOB_INDEX_START=(0 8 16 24)
 
 # Available nodes for assignment (one task per node)
-AVAILABLE_NODES=("ip-10-1-173-179" "ip-10-1-184-205" "ip-10-1-196-96" "ip-10-1-226-48")
+AVAILABLE_NODES=("ip-10-1-231-85" "ip-10-1-235-38" "ip-10-1-242-194" ip-10-1-248-29")
 NODE_INDEX="$TASK_ID"
 ASSIGNED_NODE="${AVAILABLE_NODES[$NODE_INDEX]}"
 
