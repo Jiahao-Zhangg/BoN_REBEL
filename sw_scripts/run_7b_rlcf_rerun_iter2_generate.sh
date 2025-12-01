@@ -22,6 +22,7 @@
 
 set -euo pipefail
 
+cd /fsx/gstevenw/testing_alignment_algos/BoN_REBEL
 # Create logs directory if it doesn't exist
 mkdir -p logs
 
