@@ -95,6 +95,7 @@ run_inference() {
             --selection_pairs 4 \
             --base_pairs 2 \
             --current_pairs 2 \
+            --adversary_pairs 2 \
             --push_to_hub \
             --hf_repo_template zjhhhh/7b_iter2_vec_rlcf_scores_{shard_idx} \
             --output_dir $OUTPUT_DIR
