@@ -28,7 +28,7 @@ source /fsx/gstevenw/miniconda3/etc/profile.d/conda.sh
 # Configuration variables (modify as needed)
 ETA="1e4"                     # REBEL eta parameter
 BETA="1"
-TOTAL_EPISODES="44900"         # Episodes fed to rebel.py --total_episodes
+TOTAL_EPISODES="66800"         # Episodes fed to rebel.py --total_episodes
 TEST_MODE="false"             # If true, pass --test to rebel.py for quick dataset sampling
 WORLD_SIZE="4"               # Number of GPUs/processes to use
 export CUDA_VISIBLE_DEVICES="0,1,2,3"
