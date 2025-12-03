@@ -8,7 +8,6 @@
 #SBATCH --mem=200G
 #SBATCH --partition=ml.p4d.24xlarge
 #SBATCH --nodelist=ip-10-1-173-179
-#SBATCH --exclusive
 
 set -euo pipefail
 
