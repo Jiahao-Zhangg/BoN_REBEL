@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=200G
 #SBATCH --partition=ml.p4d.24xlarge
-#SBATCH --nodelist=ip-10-1-173-179
+#SBATCH --nodelist=ip-10-1-196-96
 
 set -euo pipefail
 
