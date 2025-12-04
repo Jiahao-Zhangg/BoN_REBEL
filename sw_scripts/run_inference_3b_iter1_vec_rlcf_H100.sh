@@ -48,7 +48,7 @@ if [ "$SLURMD_NODENAME" != "$ASSIGNED_NODE" ]; then
 fi
 
 # Define paths
-SCRIPT_PATH="src/checklist_judge_data_parallel/run_inference_on_shard_iter1_rlcf.py"
+SCRIPT_PATH="src/checklist_judge_data_parallel/run_inference_on_shard_iter1_vec_rlcf.py"
 SHARD_DIR="./3b_iter1_shards"
 OUTPUT_DIR="./inference_scores_3b_iter1_rlcf"
 JUDGE_MODEL="Qwen/Qwen3-14B"
