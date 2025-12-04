@@ -92,7 +92,7 @@ run_inference() {
             --judge_model $JUDGE_MODEL \
             --world_size 1 \
             --judge_type baseline \
-            --selection_pairs 4 \
+            --selection_pairs 3 \
             --base_pairs 2 \
             --current_pairs 2 \
             --push_to_hub \
