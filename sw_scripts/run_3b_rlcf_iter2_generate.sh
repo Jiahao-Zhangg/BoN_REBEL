@@ -49,7 +49,7 @@ TOTAL_GPUS="8"
 GPUS_PER_JOB="1"
 CHUNK_SIZE="2000"
 MODEL="zjhhhh/3b_rerun_rlcf_expand_eta_1e4_step_373_final"
-OUTPUT_PREFIX="Qwen3b_rlcf_iter2_"
+OUTPUT_PREFIX="Qwen3b_rlcf_iter1_"
 GPU_MEM_UTIL="0.8"
 EXTRA_ARGS=""
 # Comma-separated logical GPU IDs on the node
