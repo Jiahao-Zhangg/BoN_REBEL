@@ -49,8 +49,8 @@ fi
 
 # Define paths
 SCRIPT_PATH="src/checklist_judge_data_parallel/run_inference_on_shard_iter1_vec_rlcf.py"
-SHARD_DIR="./3b_iter1_shards"
-OUTPUT_DIR="./inference_scores_3b_iter1_rlcf"
+SHARD_DIR="./3b_iter2_shards"
+OUTPUT_DIR="./inference_scores_3b_iter2_rlcf"
 JUDGE_MODEL="Qwen/Qwen3-14B"
 
 # Calculate shard indices for this job (8 shards per job, starting from shard 48)
@@ -96,7 +96,7 @@ run_inference() {
             --base_pairs 2 \
             --current_pairs 2 \
             --push_to_hub \
-            --hf_repo_template zjhhhh/3b_iter1_rlcf_scores_{shard_idx} \
+            --hf_repo_template zjhhhh/3b_iter2_rlcf_scores_{shard_idx} \
             --output_dir $OUTPUT_DIR
     ) > $shard_log_out 2> $shard_log_err &
 
