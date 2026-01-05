@@ -28,7 +28,7 @@ source /fsx/gstevenw/miniconda3/etc/profile.d/conda.sh
 # Configuration variables (modify as needed)
 ETA="1e3"                     # REBEL eta parameter
 BETA="1"
-TOTAL_EPISODES="42600"         # Episodes fed to rebel.py --total_episodes
+TOTAL_EPISODES="38900"         # Episodes fed to rebel.py --total_episodes
 TEST_MODE="false"             # If true, pass --test to rebel.py for quick dataset sampling
 WORLD_SIZE="8"               # Number of GPUs/processes to use
 export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
@@ -64,7 +64,7 @@ HF_REPO_NAME="zjhhhh/7b_perprompt_iter2"
 GRADIENT_ACCUMULATION_STEPS=$((128 / WORLD_SIZE))
 TRAIN_INPUT_REPO="zjhhhh/iter2_7b_multi_perprompt_scores_adversary_mean_beta_1.0_multi_noexpand_tokenized"
 # Base model used to initialize training
-BASE_MODEL="Qwen/Qwen2.5-7B-Instruct"
+BASE_MODEL="zjhhhh/7b_perprompt_step_332_final"
 
 mkdir -p "$OUTPUT_DIR"
 
