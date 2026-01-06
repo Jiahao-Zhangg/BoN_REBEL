@@ -3,7 +3,7 @@ import numpy as np
 import re
 import torch
 import torch.nn.functional as F
-from datasets import load_dataset, Dataset, DatasetDict
+from datasets import load_dataset, Dataset, DatasetDict, Features, Value, Sequence
 from tqdm import tqdm
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModelForCausalLM
 from typing import Dict, List
@@ -194,107 +194,218 @@ def main():
                 if not has_qpt:
                     dataset = dataset.add_column("qwen_prompt_tokens", qwen_prompt_tokens)
 
-        # Compute chosen/reject once per example (no expand)
-        chosen, reject, qwen_chosen, qwen_reject, qwen_chosen_tokens, qwen_reject_tokens, chosen_reward, reject_reward = [], [], [], [], [], [], [], []
-        g_chosen_list, g_reject_list = [], []
-        j_star_list = []
+        # Compute chosen/reject once per example (no expand), streaming via generator.
+        # Allow datasets that use either 'base' or 'adversary' terminology for scores, and auto-detect all ids.
+        escaped_score_type = re.escape(args.score_type)
+        counts = {}
+        sel_present_keys = set()
+        cur_present_keys = set()
+        for candidate in ("base", "adversary"):
+            sel_pat = re.compile(rf"^selection_(\d+)_{candidate}_(\d+)_({escaped_score_type})$")
+            cur_pat = re.compile(rf"^current_(\d+)_{candidate}_(\d+)_({escaped_score_type})$")
+            sel_count = sum(1 for n in dataset.column_names if sel_pat.match(n))
+            cur_count = sum(1 for n in dataset.column_names if cur_pat.match(n))
+            counts[candidate] = (sel_count, cur_count)
+            if sel_count > 0:
+                sel_present_keys.add(candidate)
+            if cur_count > 0:
+                cur_present_keys.add(candidate)
 
-        for row in tqdm(dataset):
-            beta = args.beta
-            # Build current vs base matrices for two bases and two currents
-            current_base_scores = []
-            for base_j in range(1, 3):
-                rows = []
-                for cur_k in range(1, 3):
-                    key = f"current_{cur_k}_base_{base_j}_{args.score_type}"
-                    p_vec = np.array(row[key], dtype=float)
-                    rows.append(p_vec)
-                current_base_scores.append(np.stack(rows, axis=0))  # (2, L)
+        valid_keys = sel_present_keys & cur_present_keys
+        if len(valid_keys) == 1:
+            detected_key = next(iter(valid_keys))
+        elif len(valid_keys) > 1:
+            raise ValueError(
+                "Both 'base' and 'adversary' score families are present; please keep only one naming scheme. "
+                f"Counts: base sel={counts.get('base',(0,0))[0]}, cur={counts.get('base',(0,0))[1]}; "
+                f"adversary sel={counts.get('adversary',(0,0))[0]}, cur={counts.get('adversary',(0,0))[1]}."
+            )
+        else:
+            raise ValueError(
+                "Could not find matching selection/current score columns for the same key. "
+                f"Observed counts — base: sel={counts.get('base',(0,0))[0]}, cur={counts.get('base',(0,0))[1]}; "
+                f"adversary: sel={counts.get('adversary',(0,0))[0]}, cur={counts.get('adversary',(0,0))[1]}."
+            )
 
-            exp_terms_list = []
-            for cb in current_base_scores:
-                inner_sums = np.sum(cb, axis=0) / (beta * cb.shape[0])
-                exp_terms_list.append(np.exp(-inner_sums))
+        # Collect all selection/current/base ids for the detected key
+        selection_score_pattern = re.compile(rf"^selection_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
+        current_score_pattern = re.compile(rf"^current_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
+        selection_ids = set()
+        current_ids = set()
+        base_ids = set()
+        for name in dataset.column_names:
+            sel_match = selection_score_pattern.match(name)
+            if sel_match:
+                selection_ids.add(int(sel_match.group(1)))
+                base_ids.add(int(sel_match.group(2)))
+            cur_match = current_score_pattern.match(name)
+            if cur_match:
+                current_ids.add(int(cur_match.group(1)))
+                base_ids.add(int(cur_match.group(2)))
 
-            A_vec = exp_terms_list[0] + exp_terms_list[1]
-            j_star = int(np.argmax(A_vec))
-            j_star_list.append(j_star)
+        selection_ids = sorted(selection_ids)
+        current_ids = sorted(current_ids)
+        base_ids = sorted(base_ids)
+        if not selection_ids:
+            raise ValueError("Dataset is missing selection score columns for the specified score type.")
+        if not current_ids:
+            raise ValueError("Dataset is missing current score columns for the specified score type.")
+        if not base_ids:
+            raise ValueError("Dataset is missing base indices for the specified score type.")
 
-            g_values = []
-            for sel_i in range(1, 4):
-                p_z_vs_bases = []
-                for base_j in range(1, 3):
-                    key = f"selection_{sel_i}_base_{base_j}_{args.score_type}"
-                    p_vec = np.array(row[key], dtype=float)
-                    p_z_vs_bases.append(p_vec[j_star])
-                B_star = p_z_vs_bases[0] * exp_terms_list[0][j_star] + p_z_vs_bases[1] * exp_terms_list[1][j_star]
-                g_z = B_star / A_vec[j_star]
-                g_values.append(float(g_z))
+        def row_generator():
+            for row in tqdm(dataset):
+                beta = args.beta
+                # Build current vs base/adversary matrices per base: shape (K=len(current_ids), L)
+                current_base_scores = []
+                vector_len = None
+                for base_id in base_ids:
+                    rows = []
+                    for cur_id in current_ids:
+                        key = f"current_{cur_id}_{detected_key}_{base_id}_{args.score_type}"
+                        raw_scores = row.get(key, None)
+                        if raw_scores is None:
+                            continue
+                        p_vec = np.array(raw_scores, dtype=float)
+                        p_vec = np.atleast_1d(p_vec)
+                        if vector_len is None:
+                            vector_len = p_vec.shape[0]
+                        elif p_vec.shape[0] != vector_len:
+                            raise ValueError(
+                                f"Mismatched score vector length for {key}: expected {vector_len}, got {p_vec.shape[0]}"
+                            )
+                        rows.append(p_vec)
+                    if not rows:
+                        continue
+                    current_base_scores.append(np.stack(rows, axis=0))
+                if not current_base_scores:
+                    raise ValueError("No current-base/adversary scores available to estimate A_vec and j_star.")
 
-            chosen_idx_in_z = int(np.argmax(g_values))
-            reject_idx_in_z = int(np.argmin(g_values))
+                # Compute exp_terms per base: exp(- (1/K) * sum_k P_m / beta) for each m
+                exp_terms_list = []
+                for cb in current_base_scores:
+                    inner_sums = np.sum(cb, axis=0) / (beta * cb.shape[0])
+                    exp_terms_list.append(np.exp(-inner_sums))
 
-            chosen.append(row[f"selection_response_{chosen_idx_in_z+1}"])
-            reject.append(row[f"selection_response_{reject_idx_in_z+1}"])
+                # A_m(x) = sum_i exp_terms_i[m] across bases
+                A_vec = exp_terms_list[0]
+                for i in range(1, len(exp_terms_list)):
+                    A_vec = A_vec + exp_terms_list[i]
+                j_star = int(np.argmax(A_vec))
 
-            qwen_chosen_token = tokenizer.apply_chat_template(
-                    get_message(response=row[f"selection_response_{chosen_idx_in_z+1}"]),
-                    add_generation_prompt=False,
-                    tokenize=True,
-                    padding='max_length',
-                    max_length=args.maxlen+slicing_idx_used,
-            )[slicing_idx_used:]
-            qwen_chosen_tokens.append(qwen_chosen_token)
-            chosen_text = tokenizer.decode(qwen_chosen_token, skip_special_tokens=False)
-            qwen_chosen.append(chosen_text)
-            chosen_reward.append(g_values[chosen_idx_in_z])
-            assert len(qwen_chosen_token) == args.maxlen
-            if "Qwen" in args.model:
-                assert not chosen_text.lstrip().startswith("<|im_start|>assistant"), "Qwen chosen should not include assistant header"
-                assert ("<|eot_id|>" in chosen_text) or ("<|im_end|>" in chosen_text), "Qwen chosen text should include end-of-turn marker"
-                last_id = int(qwen_chosen_token[-1])
-                pid = tokenizer.pad_token_id
-                eid = tokenizer.eos_token_id
-                assert (pid is None or last_id == pid) or (eid is None or last_id == eid), "Qwen chosen last token should be PAD or EOS"
+                # Compute g(z) using weighted B at m*
+                g_values = []
+                for sel_id in selection_ids:
+                    p_z_vs_bases = []
+                    for base_index, base_id in enumerate(base_ids):
+                        key = f"selection_{sel_id}_{detected_key}_{base_id}_{args.score_type}"
+                        raw_scores = row.get(key, None)
+                        if raw_scores is None:
+                            continue
+                        p_vec = np.array(raw_scores, dtype=float)
+                        p_vec = np.atleast_1d(p_vec)
+                        if j_star >= p_vec.shape[0]:
+                            raise ValueError(
+                                f"Score vector for {key} missing coordinate j*={j_star} (length={p_vec.shape[0]})."
+                            )
+                        weight = exp_terms_list[base_index][j_star]
+                        p_z_vs_bases.append(float(p_vec[j_star]) * float(weight))
 
-            qwen_reject_token = tokenizer.apply_chat_template(
-                    get_message(response=row[f"selection_response_{reject_idx_in_z+1}"]),
-                    add_generation_prompt=False,
-                    tokenize=True,
-                    padding='max_length',
-                    max_length=args.maxlen+slicing_idx_used,
-            )[slicing_idx_used:]
-            qwen_reject_tokens.append(qwen_reject_token)
-            reject_text = tokenizer.decode(qwen_reject_token, skip_special_tokens=False)
-            qwen_reject.append(reject_text)
-            reject_reward.append(g_values[reject_idx_in_z])
-            assert len(qwen_reject_token) == args.maxlen
-            if "Qwen" in args.model:
-                assert not reject_text.lstrip().startswith("<|im_start|>assistant"), "Qwen reject should not include assistant header"
-                assert ("<|eot_id|>" in reject_text) or ("<|im_end|>" in reject_text), "Qwen reject text should include end-of-turn marker"
-                last_id = int(qwen_reject_token[-1])
-                pid = tokenizer.pad_token_id
-                eid = tokenizer.eos_token_id
-                assert (pid is None or last_id == pid) or (eid is None or last_id == eid), "Qwen reject last token should be PAD or EOS"
+                    if not p_z_vs_bases:
+                        raise ValueError(
+                            f"No selection-{detected_key} scores available for selection {sel_id} to compute g."
+                        )
 
-            g_chosen_list.append(g_values[chosen_idx_in_z])
-            g_reject_list.append(g_values[reject_idx_in_z])
+                    B_star = float(np.sum(p_z_vs_bases))
+                    g_z = B_star / float(A_vec[j_star])
+                    g_values.append(float(g_z))
 
-        dataset = dataset.add_column("chosen", chosen)
-        dataset = dataset.add_column("chosen_reward", chosen_reward)
-        dataset = dataset.add_column("qwen_chosen", qwen_chosen)
-        dataset = dataset.add_column("qwen_chosen_tokens", qwen_chosen_tokens)
-        dataset = dataset.add_column("reject", reject)
-        dataset = dataset.add_column("reject_reward", reject_reward)
-        dataset = dataset.add_column("qwen_reject", qwen_reject)
-        dataset = dataset.add_column("qwen_reject_tokens", qwen_reject_tokens)
-        dataset = dataset.add_column("g_chosen", g_chosen_list)
-        dataset = dataset.add_column("g_reject", g_reject_list)
-        dataset = dataset.add_column("j_star", j_star_list)
+                if not g_values or len(g_values) < 2:
+                    continue
 
-        dataset = dataset.filter(lambda row: filter_same_responses(row))
-        print('filtered same responses:', len(dataset))
-        return dataset
+                chosen_idx_in_z = int(np.argmax(g_values))
+                reject_idx_in_z = int(np.argmin(g_values))
+                if chosen_idx_in_z == reject_idx_in_z:
+                    continue
+
+                chosen_sel_id = selection_ids[chosen_idx_in_z]
+                reject_sel_id = selection_ids[reject_idx_in_z]
+
+                chosen_key = f"selection_response_{chosen_sel_id}"
+                reject_key = f"selection_response_{reject_sel_id}"
+
+                qwen_chosen_token = tokenizer.apply_chat_template(
+                        get_message(response=row[chosen_key]),
+                        add_generation_prompt=False,
+                        tokenize=True,
+                        padding='max_length',
+                        max_length=args.maxlen+slicing_idx_used,
+                )[slicing_idx_used:]
+                chosen_text = tokenizer.decode(qwen_chosen_token, skip_special_tokens=False)
+                assert len(qwen_chosen_token) == args.maxlen
+                if "Qwen" in args.model:
+                    assert not chosen_text.lstrip().startswith("<|im_start|>assistant"), "Qwen chosen should not include assistant header"
+                    assert ("<|eot_id|>" in chosen_text) or ("<|im_end|>" in chosen_text), "Qwen chosen text should include end-of-turn marker"
+                    last_id = int(qwen_chosen_token[-1])
+                    pid = tokenizer.pad_token_id
+                    eid = tokenizer.eos_token_id
+                    assert (pid is None or last_id == pid) or (eid is None or last_id == eid), "Qwen chosen last token should be PAD or EOS"
+
+                qwen_reject_token = tokenizer.apply_chat_template(
+                        get_message(response=row[reject_key]),
+                        add_generation_prompt=False,
+                        tokenize=True,
+                        padding='max_length',
+                        max_length=args.maxlen+slicing_idx_used,
+                )[slicing_idx_used:]
+                reject_text = tokenizer.decode(qwen_reject_token, skip_special_tokens=False)
+                assert len(qwen_reject_token) == args.maxlen
+                if "Qwen" in args.model:
+                    assert not reject_text.lstrip().startswith("<|im_start|>assistant"), "Qwen reject should not include assistant header"
+                    assert ("<|eot_id|>" in reject_text) or ("<|im_end|>" in reject_text), "Qwen reject text should include end-of-turn marker"
+                    last_id = int(qwen_reject_token[-1])
+                    pid = tokenizer.pad_token_id
+                    eid = tokenizer.eos_token_id
+                    assert (pid is None or last_id == pid) or (eid is None or last_id == eid), "Qwen reject last token should be PAD or EOS"
+
+                example = {col: row[col] for col in dataset.column_names}
+                example.update({
+                    "chosen": row[chosen_key],
+                    "reject": row[reject_key],
+                    "qwen_chosen_tokens": list(qwen_chosen_token),
+                    "qwen_reject_tokens": list(qwen_reject_token),
+                    "qwen_chosen": chosen_text,
+                    "qwen_reject": reject_text,
+                    "chosen_reward": float(g_values[chosen_idx_in_z]),
+                    "reject_reward": float(g_values[reject_idx_in_z]),
+                    "g_chosen": float(g_values[chosen_idx_in_z]),
+                    "g_reject": float(g_values[reject_idx_in_z]),
+                    "j_star": int(j_star),
+                })
+
+                yield example
+
+        # Explicit features to speed up Arrow construction and use float64 for rewards/g-values
+        features = dataset.features.copy()
+        features.update({
+            "chosen": Value("string"),
+            "reject": Value("string"),
+            "qwen_chosen": Value("string"),
+            "qwen_reject": Value("string"),
+            "qwen_chosen_tokens": Sequence(Value("int64")),
+            "qwen_reject_tokens": Sequence(Value("int64")),
+            "chosen_reward": Value("float64"),
+            "reject_reward": Value("float64"),
+            "g_chosen": Value("float64"),
+            "g_reject": Value("float64"),
+            "j_star": Value("int64"),
+        })
+
+        streamed = Dataset.from_generator(row_generator, features=Features(features))
+        print('built dataset from generator!')
+        streamed = streamed.filter(lambda row: filter_same_responses(row))
+        print('filtered same responses:', len(streamed))
+        return streamed
 
     train_processed = process_split(ds_dict['train'])
     test_processed = process_split(ds_dict['test'])
