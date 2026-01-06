@@ -62,7 +62,7 @@ HF_REPO_NAME="zjhhhh/7b_multi_perprompt_iter2"
 # Training configuration   #
 ############################
 GRADIENT_ACCUMULATION_STEPS=$((128 / WORLD_SIZE))
-TRAIN_INPUT_REPO="zjhhhh/iter2_7b_scores_adversary_mean_beta_1.0_multi_noexpand_tokenized"
+TRAIN_INPUT_REPO="zjhhhh/iter2_7b_perprompt_scores_v2_mean_beta_1.0_multi_noexpand_tokenized"
 # Base model used to initialize training
 BASE_MODEL="zjhhhh/7b_perprompt_step_332_final"
 
