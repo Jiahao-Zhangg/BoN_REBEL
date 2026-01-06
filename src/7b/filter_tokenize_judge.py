@@ -83,108 +83,116 @@ def main():
             else:
                 tokenizer_left.add_special_tokens({"pad_token": "[PAD]"})
 
-    # Load both splits and process similarly to the expand script
-    ds_dict = load_dataset(args.input_repo)
-    if 'train' not in ds_dict or 'test' not in ds_dict:
-        raise ValueError("Preprocessed dataset must contain 'train' and 'test' splits.")
-
     if "Qwen" in args.model:
         slicing_idx_used = SYS_PROMPT_LEN
         print(f'slicing index used (fixed): {slicing_idx_used}')
     else:
         slicing_idx_used = args.slicing_idx
 
+    # Load both splits (typically preprocessed via preprocess_common or preprocess_common_stage2)
+    ds_dict = load_dataset(args.input_repo)
+    if 'train' not in ds_dict or 'test' not in ds_dict:
+        raise ValueError("Preprocessed dataset must contain 'train' and 'test' splits.")
+
     def process_split(dataset):
         print('split length:', len(dataset))
 
-        # Filter overly long prompts
-        dataset = dataset.filter(lambda row: tokenizer.apply_chat_template(
-            get_message(row['prompt']), tokenize=True, add_generation_prompt=True, return_tensors='pt').shape[-1] <= args.maxlen_prompt)
-        print('filtered long prompts:', len(dataset))
-
-        # Identify all response columns
-        response_pattern = re.compile(r'^(selection|current|base)_response_\d+$')
-        response_columns = sorted([name for name in dataset.column_names if response_pattern.match(name)])
-        if not response_columns:
-            raise ValueError("Dataset is missing response columns required for length filtering.")
-        print(f'response columns length-filtered: {response_columns}')
-
-        # Filter by max response length
-        def responses_within_limit(row):
-            for col in response_columns:
-                resp = row[col]
-                if not isinstance(resp, str):
-                    return False
-                tokens = tokenizer.apply_chat_template(
-                    get_message(response=resp),
-                    tokenize=True,
-                    add_generation_prompt=False,
-                    return_tensors='pt',
-                )[:, slicing_idx_used:]
-                if tokens.shape[-1] > args.maxlen:
-                    return False
-            return True
-
-        dataset = dataset.filter(responses_within_limit)
-        print('filtered responses by length:', len(dataset))
-
-        # Ensure responses end with PAD/EOS
-        def responses_end_properly(row):
-            for col in response_columns:
-                resp = row[col]
-                if not isinstance(resp, str):
-                    return False
-                response_token = tokenizer.apply_chat_template(
-                    get_message(response=resp),
-                    add_generation_prompt=False,
-                    tokenize=True,
-                    padding='max_length',
-                    max_length=args.maxlen + slicing_idx_used,
-                )[slicing_idx_used:]
-
-                if len(response_token) != args.maxlen:
-                    return False
-
-                pad_id = tokenizer.pad_token_id
-                eos_id = tokenizer.eos_token_id
-                if not response_token:
-                    return False
-                last_id = int(response_token[-1])
-                if pad_id is None and eos_id is None:
-                    continue
-                pad_ok = pad_id is not None and last_id == pad_id
-                eos_ok = eos_id is not None and last_id == eos_id
-                if not (pad_ok or eos_ok):
-                    return False
-            return True
-
-        dataset = dataset.filter(responses_end_properly)
-        print('filtered responses not ending with PAD/EOS:', len(dataset))
-
-        # Ensure prompt columns exist; compute only if missing
         has_qp = "qwen_prompt" in dataset.column_names
         has_qpt = "qwen_prompt_tokens" in dataset.column_names
-        if not (has_qp and has_qpt):
-            qwen_prompts = []
-            qwen_prompt_tokens = []
-            for row in tqdm(dataset):
-                qwen_prompt_token = tokenizer_left.apply_chat_template(
-                        get_message(row['prompt']), 
+        preprocessed = has_qp and has_qpt
+
+        if preprocessed:
+            # Dataset was already filtered and had prompts tokenized via preprocess_common/preprocess_common_stage2.
+            print("Detected preprocessed dataset with qwen_prompt columns; skipping length/PAD filtering.")
+        else:
+            # Apply the same style of filtering as the preprocess_common scripts for raw datasets.
+            # Filter overly long prompts
+            dataset = dataset.filter(lambda row: tokenizer.apply_chat_template(
+                get_message(row['prompt']), tokenize=True, add_generation_prompt=True, return_tensors='pt'
+            ).shape[-1] <= args.maxlen_prompt)
+            print('filtered long prompts:', len(dataset))
+
+            # Identify all response columns (include adversary to mirror stage2 preprocessing)
+            response_pattern = re.compile(r'^(selection|current|base|adversary)_response_\d+$')
+            response_columns = sorted([name for name in dataset.column_names if response_pattern.match(name)])
+            if not response_columns:
+                raise ValueError("Dataset is missing response columns required for length filtering.")
+            print(f'response columns length-filtered: {response_columns}')
+
+            # Filter by max response length
+            def responses_within_limit(row):
+                for col in response_columns:
+                    resp = row[col]
+                    if not isinstance(resp, str):
+                        return False
+                    tokens = tokenizer.apply_chat_template(
+                        get_message(response=resp),
+                        tokenize=True,
+                        add_generation_prompt=False,
+                        return_tensors='pt',
+                    )[:, slicing_idx_used:]
+                    if tokens.shape[-1] > args.maxlen:
+                        return False
+                return True
+
+            dataset = dataset.filter(responses_within_limit)
+            print('filtered responses by length:', len(dataset))
+
+            # Ensure responses end with PAD/EOS
+            def responses_end_properly(row):
+                for col in response_columns:
+                    resp = row[col]
+                    if not isinstance(resp, str):
+                        return False
+                    response_token = tokenizer.apply_chat_template(
+                        get_message(response=resp),
+                        add_generation_prompt=False,
+                        tokenize=True,
+                        padding='max_length',
+                        max_length=args.maxlen + slicing_idx_used,
+                    )[slicing_idx_used:]
+
+                    if len(response_token) != args.maxlen:
+                        return False
+
+                    pad_id = tokenizer.pad_token_id
+                    eos_id = tokenizer.eos_token_id
+                    if not response_token:
+                        return False
+                    last_id = int(response_token[-1])
+                    if pad_id is None and eos_id is None:
+                        continue
+                    pad_ok = pad_id is not None and last_id == pad_id
+                    eos_ok = eos_id is not None and last_id == eos_id
+                    if not (pad_ok or eos_ok):
+                        return False
+                return True
+
+            dataset = dataset.filter(responses_end_properly)
+            print('filtered responses not ending with PAD/EOS:', len(dataset))
+
+            # Ensure prompt columns exist; compute only if missing
+            if not (has_qp and has_qpt):
+                qwen_prompts = []
+                qwen_prompt_tokens = []
+                for row in tqdm(dataset):
+                    qwen_prompt_token = tokenizer_left.apply_chat_template(
+                        get_message(row['prompt']),
                         add_generation_prompt=True,
                         tokenize=True,
                         padding='max_length',
                         max_length=args.maxlen_prompt,
-                )
-                qwen_prompt = tokenizer_left.decode(qwen_prompt_token, skip_special_tokens=False)
-                assert len(qwen_prompt_token) == args.maxlen_prompt
-                if "Qwen" in args.model:
-                    assert ("<|start_header_id|>" in qwen_prompt or "<|im_start|>" in qwen_prompt), "Qwen prompt missing chat header markers"
-                qwen_prompts.append(qwen_prompt)
-                qwen_prompt_tokens.append(qwen_prompt_token)
-            if not has_qp:
-                dataset = dataset.add_column("qwen_prompt", qwen_prompts)
-            if not has_qpt:
-                dataset = dataset.add_column("qwen_prompt_tokens", qwen_prompt_tokens)
+                    )
+                    qwen_prompt = tokenizer_left.decode(qwen_prompt_token, skip_special_tokens=False)
+                    assert len(qwen_prompt_token) == args.maxlen_prompt
+                    if "Qwen" in args.model:
+                        assert ("<|start_header_id|>" in qwen_prompt or "<|im_start|>" in qwen_prompt), "Qwen prompt missing chat header markers"
+                    qwen_prompts.append(qwen_prompt)
+                    qwen_prompt_tokens.append(qwen_prompt_token)
+                if not has_qp:
+                    dataset = dataset.add_column("qwen_prompt", qwen_prompts)
+                if not has_qpt:
+                    dataset = dataset.add_column("qwen_prompt_tokens", qwen_prompt_tokens)
 
         # Compute chosen/reject once per example (no expand)
         chosen, reject, qwen_chosen, qwen_reject, qwen_chosen_tokens, qwen_reject_tokens, chosen_reward, reject_reward = [], [], [], [], [], [], [], []
