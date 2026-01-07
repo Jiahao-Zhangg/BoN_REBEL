@@ -198,10 +198,40 @@ def main():
                 if not has_qpt:
                     dataset = dataset.add_column("qwen_prompt_tokens", qwen_prompt_tokens)
 
-        # Discover score columns (base only; min scripts do not use adversary naming)
+        # Discover score columns (support both base and adversary naming, like min_expand)
         escaped_score_type = re.escape(args.score_type)
-        selection_score_pattern = re.compile(rf"^selection_(\d+)_base_(\d+)_({escaped_score_type})$")
-        current_score_pattern = re.compile(rf"^current_(\d+)_base_(\d+)_({escaped_score_type})$")
+        counts = {}
+        sel_present_keys = set()
+        cur_present_keys = set()
+        for candidate in ("base", "adversary"):
+            sel_pat = re.compile(rf"^selection_(\d+)_{candidate}_(\d+)_({escaped_score_type})$")
+            cur_pat = re.compile(rf"^current_(\d+)_{candidate}_(\d+)_({escaped_score_type})$")
+            sel_count = sum(1 for n in dataset.column_names if sel_pat.match(n))
+            cur_count = sum(1 for n in dataset.column_names if cur_pat.match(n))
+            counts[candidate] = (sel_count, cur_count)
+            if sel_count > 0:
+                sel_present_keys.add(candidate)
+            if cur_count > 0:
+                cur_present_keys.add(candidate)
+
+        valid_keys = sel_present_keys & cur_present_keys
+        if len(valid_keys) == 1:
+            detected_key = next(iter(valid_keys))
+        elif len(valid_keys) > 1:
+            raise ValueError(
+                "Both 'base' and 'adversary' score families are present; please keep only one naming scheme. "
+                f"Counts: base sel={counts.get('base',(0,0))[0]}, cur={counts.get('base',(0,0))[1]}; "
+                f"adversary sel={counts.get('adversary',(0,0))[0]}, cur={counts.get('adversary',(0,0))[1]}."
+            )
+        else:
+            raise ValueError(
+                "Could not find matching selection/current score columns for the same key. "
+                f"Observed counts — base: sel={counts.get('base',(0,0))[0]}, cur={counts.get('base',(0,0))[1]}; "
+                f"adversary: sel={counts.get('adversary',(0,0))[0]}, cur={counts.get('adversary',(0,0))[1]}."
+            )
+
+        selection_score_pattern = re.compile(rf"^selection_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
+        current_score_pattern = re.compile(rf"^current_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
         selection_ids = set()
         current_ids = set()
         base_ids = set()
@@ -219,9 +249,9 @@ def main():
         current_ids = sorted(current_ids)
         base_ids = sorted(base_ids)
         if not selection_ids:
-            raise ValueError("Dataset is missing selection-base score columns for the specified score type.")
+            raise ValueError("Dataset is missing selection score columns for the specified score type.")
         if not current_ids:
-            raise ValueError("Dataset is missing current-base score columns for the specified score type.")
+            raise ValueError("Dataset is missing current score columns for the specified score type.")
         if not base_ids:
             raise ValueError("Dataset is missing base indices for the specified score type.")
 
@@ -229,12 +259,12 @@ def main():
         # For the min no-expand variant, we yield at most one (chosen, reject) pair per original row.
         def row_generator():
             for row in tqdm(dataset):
-                # Estimate j* from current-base averages
+                # Estimate j* from current-{detected_key} averages
                 current_vectors = []
                 vector_len = None
                 for cur_id in current_ids:
                     for base_id in base_ids:
-                        key = f"current_{cur_id}_base_{base_id}_{args.score_type}"
+                        key = f"current_{cur_id}_{detected_key}_{base_id}_{args.score_type}"
                         raw_scores = row.get(key, None)
                         if raw_scores is None:
                             continue
@@ -248,7 +278,7 @@ def main():
                             )
                         current_vectors.append(p_vec)
                 if not current_vectors:
-                    raise ValueError("No current-base scores available to estimate P(x, pi, pi').")
+                    raise ValueError("No current-base/adversary scores available to estimate P(x, pi, pi').")
 
                 stacked_current = np.stack(current_vectors, axis=0)
                 estimated_p = np.mean(stacked_current, axis=0)
@@ -259,7 +289,7 @@ def main():
                 for sel_id in selection_ids:
                     per_base_scores = []
                     for base_id in base_ids:
-                        key = f"selection_{sel_id}_base_{base_id}_{args.score_type}"
+                        key = f"selection_{sel_id}_{detected_key}_{base_id}_{args.score_type}"
                         raw_scores = row.get(key, None)
                         if raw_scores is None:
                             continue
@@ -272,7 +302,7 @@ def main():
                         per_base_scores.append(float(p_vec[j_star]))
                     if not per_base_scores:
                         raise ValueError(
-                            f"No selection-base scores available for selection {sel_id} to compute gradient."
+                            f"No selection-{detected_key} scores available for selection {sel_id} to compute gradient."
                         )
                     g_values.append(float(np.mean(per_base_scores)))
 
