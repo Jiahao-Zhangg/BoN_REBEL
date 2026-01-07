@@ -25,14 +25,6 @@ def parse_arguments():
     parser.add_argument("--slicing_idx", type=int, default=24)
     parser.add_argument("--score_type", type=str, default="mean", choices=["mean", "majority"],
                         help="Use all mean or all majority score vectors when computing preferences")
-    parser.add_argument("--output_repo_prefix", type=str, default=None,
-                        help="If set, use this as the repo prefix for push_to_hub instead of input_repo")
-    parser.add_argument("--limit_rows", type=int, default=0,
-                        help="If >0, limit each split to first N rows for debugging")
-    parser.add_argument("--gap_ratio", type=float, default=0.0,
-                        help="If >0, filter top ratio by (g_chosen - g_reject) per split and push *_gap")
-    parser.add_argument("--gap_shuffle_seed", type=int, default=None,
-                        help="Shuffle seed used after gap filtering (None = no fixed seed)")
     return parser.parse_args()
 
 
@@ -97,37 +89,114 @@ def main():
     else:
         slicing_idx_used = args.slicing_idx
 
-    # Load both splits from preprocessed dataset
+    # Load both splits (typically preprocessed via preprocess_common or preprocess_common_stage2)
     ds_dict = load_dataset(args.input_repo)
     if 'train' not in ds_dict or 'test' not in ds_dict:
         raise ValueError("Preprocessed dataset must contain 'train' and 'test' splits.")
 
-    # Optionally limit rows in each split for debugging
-    if args.limit_rows and args.limit_rows > 0:
-        n_train = min(args.limit_rows, len(ds_dict['train']))
-        n_test = min(args.limit_rows, len(ds_dict['test']))
-        ds_dict = DatasetDict({
-            'train': ds_dict['train'].select(range(n_train)),
-            'test': ds_dict['test'].select(range(n_test)),
-        })
-
-    # Process a single split
     def process_split(dataset):
         print('split length:', len(dataset))
-        required_cols = ["qwen_prompt", "qwen_prompt_tokens"]
-        for c in required_cols:
-            if c not in dataset.column_names:
-                raise ValueError(f"Expected preprocessed dataset to contain column '{c}'. Please run preprocess_common.py first.")
 
-        # Allow datasets that use either 'base' or 'adversary' terminology
-        response_pattern = re.compile(r'^(selection|current|base|adversary)_response_\d+$')
-        response_columns = sorted([name for name in dataset.column_names if response_pattern.match(name)])
-        if not response_columns:
-            raise ValueError("Dataset is missing response columns required for downstream tokenization.")
+        has_qp = "qwen_prompt" in dataset.column_names
+        has_qpt = "qwen_prompt_tokens" in dataset.column_names
+        preprocessed = has_qp and has_qpt
 
+        if preprocessed:
+            # Dataset was already filtered and had prompts tokenized via preprocess_common/preprocess_common_stage2.
+            print("Detected preprocessed dataset with qwen_prompt columns; skipping length/PAD filtering.")
+        else:
+            # Apply the same style of filtering as the preprocess_common scripts for raw datasets.
+            # Filter overly long prompts
+            dataset = dataset.filter(lambda row: tokenizer.apply_chat_template(
+                get_message(row['prompt']), tokenize=True, add_generation_prompt=True, return_tensors='pt'
+            ).shape[-1] <= args.maxlen_prompt)
+            print('filtered long prompts:', len(dataset))
+
+            # Identify all response columns (include adversary to mirror stage2 preprocessing)
+            response_pattern = re.compile(r'^(selection|current|base|adversary)_response_\d+$')
+            response_columns = sorted([name for name in dataset.column_names if response_pattern.match(name)])
+            if not response_columns:
+                raise ValueError("Dataset is missing response columns required for length filtering.")
+            print(f'response columns length-filtered: {response_columns}')
+
+            # Filter by max response length
+            def responses_within_limit(row):
+                for col in response_columns:
+                    resp = row[col]
+                    if not isinstance(resp, str):
+                        return False
+                    tokens = tokenizer.apply_chat_template(
+                        get_message(response=resp),
+                        tokenize=True,
+                        add_generation_prompt=False,
+                        return_tensors='pt',
+                    )[:, slicing_idx_used:]
+                    if tokens.shape[-1] > args.maxlen:
+                        return False
+                return True
+
+            dataset = dataset.filter(responses_within_limit)
+            print('filtered responses by length:', len(dataset))
+
+            # Ensure responses end with PAD/EOS
+            def responses_end_properly(row):
+                for col in response_columns:
+                    resp = row[col]
+                    if not isinstance(resp, str):
+                        return False
+                    response_token = tokenizer.apply_chat_template(
+                        get_message(response=resp),
+                        add_generation_prompt=False,
+                        tokenize=True,
+                        padding='max_length',
+                        max_length=args.maxlen + slicing_idx_used,
+                    )[slicing_idx_used:]
+
+                    if len(response_token) != args.maxlen:
+                        return False
+
+                    pad_id = tokenizer.pad_token_id
+                    eos_id = tokenizer.eos_token_id
+                    if not response_token:
+                        return False
+                    last_id = int(response_token[-1])
+                    if pad_id is None and eos_id is None:
+                        continue
+                    pad_ok = pad_id is not None and last_id == pad_id
+                    eos_ok = eos_id is not None and last_id == eos_id
+                    if not (pad_ok or eos_ok):
+                        return False
+                return True
+
+            dataset = dataset.filter(responses_end_properly)
+            print('filtered responses not ending with PAD/EOS:', len(dataset))
+
+            # Ensure prompt columns exist; compute only if missing
+            if not (has_qp and has_qpt):
+                qwen_prompts = []
+                qwen_prompt_tokens = []
+                for row in tqdm(dataset):
+                    qwen_prompt_token = tokenizer_left.apply_chat_template(
+                        get_message(row['prompt']),
+                        add_generation_prompt=True,
+                        tokenize=True,
+                        padding='max_length',
+                        max_length=args.maxlen_prompt,
+                    )
+                    qwen_prompt = tokenizer_left.decode(qwen_prompt_token, skip_special_tokens=False)
+                    assert len(qwen_prompt_token) == args.maxlen_prompt
+                    if "Qwen" in args.model:
+                        assert ("<|start_header_id|>" in qwen_prompt or "<|im_start|>" in qwen_prompt), "Qwen prompt missing chat header markers"
+                    qwen_prompts.append(qwen_prompt)
+                    qwen_prompt_tokens.append(qwen_prompt_token)
+                if not has_qp:
+                    dataset = dataset.add_column("qwen_prompt", qwen_prompts)
+                if not has_qpt:
+                    dataset = dataset.add_column("qwen_prompt_tokens", qwen_prompt_tokens)
+
+        # Compute chosen/reject once per example (no expand), streaming via generator.
+        # Allow datasets that use either 'base' or 'adversary' terminology for scores, and auto-detect all ids.
         escaped_score_type = re.escape(args.score_type)
-        # Detect whether score columns consistently use 'base' or 'adversary'.
-        # We require both selection_*_<key>_* and current_*_<key>_* to exist for the SAME key.
         counts = {}
         sel_present_keys = set()
         cur_present_keys = set()
@@ -158,6 +227,7 @@ def main():
                 f"adversary: sel={counts.get('adversary',(0,0))[0]}, cur={counts.get('adversary',(0,0))[1]}."
             )
 
+        # Collect all selection/current/base ids for the detected key
         selection_score_pattern = re.compile(rf"^selection_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
         current_score_pattern = re.compile(rf"^current_(\d+)_{detected_key}_(\d+)_({escaped_score_type})$")
         selection_ids = set()
@@ -183,7 +253,6 @@ def main():
         if not base_ids:
             raise ValueError("Dataset is missing base indices for the specified score type.")
 
-        # Stream rows via generator to avoid building a huge dict-of-lists
         def row_generator():
             for row in tqdm(dataset):
                 beta = args.beta
@@ -208,14 +277,14 @@ def main():
                         rows.append(p_vec)
                     if not rows:
                         continue
-                    current_base_scores.append(np.stack(rows, axis=0))  # (K, L)
+                    current_base_scores.append(np.stack(rows, axis=0))
                 if not current_base_scores:
                     raise ValueError("No current-base/adversary scores available to estimate A_vec and j_star.")
 
                 # Compute exp_terms per base: exp(- (1/K) * sum_k P_m / beta) for each m
-                exp_terms_list = []  # list of vectors (L,)
+                exp_terms_list = []
                 for cb in current_base_scores:
-                    inner_sums = np.sum(cb, axis=0) / (beta * cb.shape[0])  # (L,)
+                    inner_sums = np.sum(cb, axis=0) / (beta * cb.shape[0])
                     exp_terms_list.append(np.exp(-inner_sums))
 
                 # A_m(x) = sum_i exp_terms_i[m] across bases
@@ -227,7 +296,6 @@ def main():
                 # Compute g(z) using weighted B at m*
                 g_values = []
                 for sel_id in selection_ids:
-                    # Gather selection vectors per base
                     p_z_vs_bases = []
                     for base_index, base_id in enumerate(base_ids):
                         key = f"selection_{sel_id}_{detected_key}_{base_id}_{args.score_type}"
@@ -240,7 +308,6 @@ def main():
                             raise ValueError(
                                 f"Score vector for {key} missing coordinate j*={j_star} (length={p_vec.shape[0]})."
                             )
-                        # Weighted by exp_terms at coordinate j_star for that base
                         weight = exp_terms_list[base_index][j_star]
                         p_z_vs_bases.append(float(p_vec[j_star]) * float(weight))
 
@@ -253,68 +320,70 @@ def main():
                     g_z = B_star / float(A_vec[j_star])
                     g_values.append(float(g_z))
 
-                # Select exactly one pair: best vs worst
-                if g_values:
-                    g_array = np.array(g_values, dtype=float)
-                    if g_array.size >= 2:
-                        lower_idx = int(np.argmin(g_array))
-                        higher_idx = int(np.argmax(g_array))
-                        if higher_idx != lower_idx:
-                            higher_sel_id = selection_ids[higher_idx]
-                            lower_sel_id = selection_ids[lower_idx]
+                if not g_values or len(g_values) < 2:
+                    continue
 
-                            chosen_text = row[f"selection_response_{higher_sel_id}"]
-                            reject_text = row[f"selection_response_{lower_sel_id}"]
+                chosen_idx_in_z = int(np.argmax(g_values))
+                reject_idx_in_z = int(np.argmin(g_values))
+                if chosen_idx_in_z == reject_idx_in_z:
+                    continue
 
-                            chosen_token = tokenizer.apply_chat_template(
-                                get_message(response=chosen_text),
-                                add_generation_prompt=False,
-                                tokenize=True,
-                                padding='max_length',
-                                max_length=args.maxlen + slicing_idx_used,
-                            )[slicing_idx_used:]
-                            reject_token = tokenizer.apply_chat_template(
-                                get_message(response=reject_text),
-                                add_generation_prompt=False,
-                                tokenize=True,
-                                padding='max_length',
-                                max_length=args.maxlen + slicing_idx_used,
-                            )[slicing_idx_used:]
+                chosen_sel_id = selection_ids[chosen_idx_in_z]
+                reject_sel_id = selection_ids[reject_idx_in_z]
 
-                            chosen_text_dec = tokenizer.decode(chosen_token, skip_special_tokens=False)
-                            reject_text_dec = tokenizer.decode(reject_token, skip_special_tokens=False)
+                chosen_key = f"selection_response_{chosen_sel_id}"
+                reject_key = f"selection_response_{reject_sel_id}"
 
-                            assert len(chosen_token) == args.maxlen
-                            assert len(reject_token) == args.maxlen
-                            if "Qwen" in args.model:
-                                assert not chosen_text_dec.lstrip().startswith("<|im_start|>assistant"), "Qwen chosen should not include assistant header"
-                                assert ("<|eot_id|>" in chosen_text_dec) or ("<|im_end|>" in chosen_text_dec), "Qwen chosen text should include end-of-turn marker"
-                                last_id_ch = int(chosen_token[-1])
-                                pid = tokenizer.pad_token_id
-                                eid = tokenizer.eos_token_id
-                                assert (pid is None or last_id_ch == pid) or (eid is None or last_id_ch == eid), "Qwen chosen last token should be PAD or EOS"
+                qwen_chosen_token = tokenizer.apply_chat_template(
+                        get_message(response=row[chosen_key]),
+                        add_generation_prompt=False,
+                        tokenize=True,
+                        padding='max_length',
+                        max_length=args.maxlen+slicing_idx_used,
+                )[slicing_idx_used:]
+                chosen_text = tokenizer.decode(qwen_chosen_token, skip_special_tokens=False)
+                assert len(qwen_chosen_token) == args.maxlen
+                if "Qwen" in args.model:
+                    assert not chosen_text.lstrip().startswith("<|im_start|>assistant"), "Qwen chosen should not include assistant header"
+                    assert ("<|eot_id|>" in chosen_text) or ("<|im_end|>" in chosen_text), "Qwen chosen text should include end-of-turn marker"
+                    last_id = int(qwen_chosen_token[-1])
+                    pid = tokenizer.pad_token_id
+                    eid = tokenizer.eos_token_id
+                    assert (pid is None or last_id == pid) or (eid is None or last_id == eid), "Qwen chosen last token should be PAD or EOS"
 
-                                assert not reject_text_dec.lstrip().startswith("<|im_start|>assistant"), "Qwen reject should not include assistant header"
-                                assert ("<|eot_id|>" in reject_text_dec) or ("<|im_end|>" in reject_text_dec), "Qwen reject text should include end-of-turn marker"
-                                last_id_rj = int(reject_token[-1])
-                                assert (pid is None or last_id_rj == pid) or (eid is None or last_id_rj == eid), "Qwen reject last token should be PAD or EOS"
+                qwen_reject_token = tokenizer.apply_chat_template(
+                        get_message(response=row[reject_key]),
+                        add_generation_prompt=False,
+                        tokenize=True,
+                        padding='max_length',
+                        max_length=args.maxlen+slicing_idx_used,
+                )[slicing_idx_used:]
+                reject_text = tokenizer.decode(qwen_reject_token, skip_special_tokens=False)
+                assert len(qwen_reject_token) == args.maxlen
+                if "Qwen" in args.model:
+                    assert not reject_text.lstrip().startswith("<|im_start|>assistant"), "Qwen reject should not include assistant header"
+                    assert ("<|eot_id|>" in reject_text) or ("<|im_end|>" in reject_text), "Qwen reject text should include end-of-turn marker"
+                    last_id = int(qwen_reject_token[-1])
+                    pid = tokenizer.pad_token_id
+                    eid = tokenizer.eos_token_id
+                    assert (pid is None or last_id == pid) or (eid is None or last_id == eid), "Qwen reject last token should be PAD or EOS"
 
-                            example = {col: row[col] for col in dataset.column_names}
-                            example.update({
-                                "chosen": chosen_text,
-                                "reject": reject_text,
-                                "qwen_chosen_tokens": list(chosen_token),
-                                "qwen_reject_tokens": list(reject_token),
-                                "qwen_chosen": chosen_text_dec,
-                                "qwen_reject": reject_text_dec,
-                                "chosen_reward": float(g_values[higher_idx]),
-                                "reject_reward": float(g_values[lower_idx]),
-                                "g_chosen": float(g_values[higher_idx]),
-                                "g_reject": float(g_values[lower_idx]),
-                                "j_star": int(j_star),
-                            })
+                example = {col: row[col] for col in dataset.column_names}
+                example.update({
+                    "chosen": row[chosen_key],
+                    "reject": row[reject_key],
+                    "qwen_chosen_tokens": list(qwen_chosen_token),
+                    "qwen_reject_tokens": list(qwen_reject_token),
+                    "qwen_chosen": chosen_text,
+                    "qwen_reject": reject_text,
+                    "chosen_reward": float(g_values[chosen_idx_in_z]),
+                    "reject_reward": float(g_values[reject_idx_in_z]),
+                    "g_chosen": float(g_values[chosen_idx_in_z]),
+                    "g_reject": float(g_values[reject_idx_in_z]),
+                    "j_star": int(j_star),
+                })
 
-                            yield example
+                yield example
 
         # Explicit features to speed up Arrow construction and use float64 for rewards/g-values
         features = dataset.features.copy()
@@ -342,26 +411,8 @@ def main():
     test_processed = process_split(ds_dict['test'])
 
     out = DatasetDict({"train": train_processed, "test": test_processed})
-    repo_prefix = args.output_repo_prefix if args.output_repo_prefix else args.input_repo
-    base_repo = repo_prefix + '_' + args.score_type + '_beta_' + str(args.beta) + '_multi_noexpand_tokenized'
-    out.push_to_hub(base_repo)
+    out.push_to_hub(args.input_repo + '_beta_' + str(args.beta) + '_multi_noexpand_tokenized')
 
-    # Optional gap filtering and secondary upload
-    if args.gap_ratio and args.gap_ratio > 0.0:
-        def gap_filter(split_ds):
-            if "g_chosen" not in split_ds.column_names or "g_reject" not in split_ds.column_names:
-                raise ValueError("Missing g_chosen or g_reject for gap filtering")
-            with_gap = split_ds.map(lambda row: {"_gap": float(row["g_chosen"]) - float(row["g_reject"])})
-            sorted_by_gap = with_gap.sort("_gap", reverse=True)
-            keep_count = max(1, int(len(sorted_by_gap) * float(args.gap_ratio)))
-            filtered = sorted_by_gap.select(range(keep_count)).remove_columns(["_gap"]).shuffle(seed=args.gap_shuffle_seed)
-            return filtered
-
-        gap_out = DatasetDict({
-            "train": gap_filter(out["train"]),
-            "test": out["test"],
-        })
-        gap_out.push_to_hub(f"{base_repo}_gap_ratio_{args.gap_ratio}")
 
 
 if __name__ == "__main__":
