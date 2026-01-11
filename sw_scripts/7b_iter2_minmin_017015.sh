@@ -26,7 +26,7 @@ cd /fsx/gstevenw/testing_alignment_algos/BoN_REBEL
 source /fsx/gstevenw/miniconda3/etc/profile.d/conda.sh
 
 # Configuration variables (modify as needed)
-ETA="1e3"                     # REBEL eta parameter
+ETA="1e4"                     # REBEL eta parameter
 BETA="1"
 TOTAL_EPISODES="36800"         # Episodes fed to rebel.py --total_episodes
 TEST_MODE="false"             # If true, pass --test to rebel.py for quick dataset sampling
