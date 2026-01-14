@@ -115,6 +115,7 @@ for shard in 0 1; do
       --aliases "$alias" \
       --output_dir "$shard_out" \
       --push_to_hub \
+      --hf_postfix "shard${shard}" \
       --response_world_size 1 &
     pid="$!"
     PIDS+=("$pid")
@@ -170,6 +171,7 @@ for shard in 0 1; do
       --responses_dir "$responses_dir" \
       --judge_model "$JUDGE_MODEL" \
       --push_to_hub \
+      --hf_postfix "shard${shard}" \
       --switch_position \
       --judge_world_size 1 &
     pid="$!"
