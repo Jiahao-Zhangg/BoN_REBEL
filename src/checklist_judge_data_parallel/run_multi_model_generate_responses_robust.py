@@ -114,6 +114,15 @@ def resolve_response_repo(template: str, alias: str) -> str:
     return f"{template}_{tag}"
 
 
+def apply_postfix(repo_id: str, postfix: str) -> str:
+    if not postfix:
+        return repo_id
+    tag = safe_tag(postfix).lstrip("_")
+    if not tag:
+        return repo_id
+    return f"{repo_id}_{tag}"
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate two responses per prompt for multiple models (robust/resumable)."
@@ -135,6 +144,8 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default="./game_matrix_generation")
     parser.add_argument("--responses_repo_template", type=str, default="zjhhhh/{model_tag}")
     parser.add_argument("--push_to_hub", action="store_true", default=False)
+    parser.add_argument("--hf_postfix", type=str, default="",
+                        help="Optional suffix to append to the hub repo id (e.g., shard id)")
 
     parser.add_argument("--response_max_tokens", type=int, default=2048)
     parser.add_argument("--response_temperature", type=float, default=0.1)
@@ -270,6 +281,7 @@ def main():
                 print(f"[{model_id}] responses incomplete, skipping push")
                 continue
             repo_id = resolve_response_repo(args.responses_repo_template, alias_by_model[model_id])
+            repo_id = apply_postfix(repo_id, args.hf_postfix)
             rows = []
             for idx, (r1, r2) in enumerate(responses):
                 rows.append({"idx": idx, "prompt": prompts[idx], "response_1": r1, "response_2": r2, "model": model_id})

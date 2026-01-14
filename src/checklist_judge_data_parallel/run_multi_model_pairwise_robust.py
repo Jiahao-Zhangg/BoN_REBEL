@@ -167,6 +167,15 @@ def resolve_scores_repo(template: str, alias_a: str, alias_b: str) -> str:
     return f"{template}_{tag_a}_{tag_b}"
 
 
+def apply_postfix(repo_id: str, postfix: str) -> str:
+    if not postfix:
+        return repo_id
+    tag = safe_tag(postfix).lstrip("_")
+    if not tag:
+        return repo_id
+    return f"{repo_id}_{tag}"
+
+
 def load_pair_checkpoints(ckpt_root: str, n_rows: int, pair_results: Dict[str, List]):
     if not os.path.isdir(ckpt_root):
         return
@@ -333,6 +342,8 @@ def parse_args():
                         help="Directory containing per-model response JSONL files (defaults to output_dir/responses)")
     parser.add_argument("--scores_repo_template", type=str, default="zjhhhh/{model_a}_{model_b}")
     parser.add_argument("--push_to_hub", action="store_true", default=False)
+    parser.add_argument("--hf_postfix", type=str, default="",
+                        help="Optional suffix to append to the hub repo id (e.g., shard id)")
 
     parser.add_argument("--judge_model", type=str, default="Qwen/Qwen3-14B")
     parser.add_argument("--judge_world_size", type=int, default=2)
@@ -501,6 +512,14 @@ def main():
             for i in range(n_expanded):
                 oi = eds[i]["orig_index"]
                 idx_map.setdefault(oi, []).append(i)
+            skip_prefixes = (
+                "response_",
+                "selection_response_",
+                "base_response_",
+                "current_response_",
+                "adversary_response_",
+            )
+            skip_exact = {"selection", "base", "current"}
             for idx in range(n_rows):
                 row = {
                     "idx": idx,
@@ -513,6 +532,10 @@ def main():
                 }
                 for key in ds.column_names:
                     if key not in row:
+                        if key in skip_exact:
+                            continue
+                        if key.startswith(skip_prefixes):
+                            continue
                         row[key] = ds[idx][key]
                 for label, _, _ in combos:
                     mean_vals = pair_results.get(label + "_mean", [])
@@ -530,12 +553,16 @@ def main():
 
         if args.push_to_hub:
             repo_id = resolve_scores_repo(args.scores_repo_template, alias_by_model[model_a], alias_by_model[model_b])
+            repo_id = apply_postfix(repo_id, args.hf_postfix)
             rows = []
             with open(out_path, "r") as f:
                 for line in f:
                     line = line.strip()
                     if line:
-                        rows.append(json.loads(line))
+                        row = json.loads(line)
+                        for key in ("selection", "base", "current"):
+                            row.pop(key, None)
+                        rows.append(row)
             try:
                 Dataset.from_list(rows).push_to_hub(repo_id)
                 print(f"Pushed scores -> {repo_id}")
