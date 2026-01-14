@@ -40,11 +40,15 @@ MODELS=(
   "zjhhhh/7b_iter2_multi_0.17_eta_1e4_step_322_final"
   "zjhhhh/7b_iter2_minmin_final_eta_1e4_step_319_final"
   "zjhhhh/7b_fullcheck_gap_0.17_iter2_eta_1e2_step_322_final"
+  "Qwen/Qwen2.5-7B-Instruct"
+  "viswavi/qwen2.5_rlcf"
 )
 ALIASES=(
   "7b_multi_iter2_game_matrix"
   "7b_min_iter2_game_matrix"
   "7b_fullcheck_iter2_game_matrix"
+  "7b_base_game_matrix"
+  "7b_rlcf_game_matrix"
 )
 
 if [[ "${#MODELS[@]}" -ne "${#ALIASES[@]}" ]]; then
@@ -137,9 +141,13 @@ unset PID_GPU
 declare -A PID_GPU
 
 PAIR_IDX=(
-  "0 1"
-  "0 2"
-  "1 2"
+  "0 3"
+  "0 4"
+  "1 3"
+  "1 4"
+  "2 3"
+  "2 4"
+  "3 4"
 )
 
 for shard in 0 1; do
